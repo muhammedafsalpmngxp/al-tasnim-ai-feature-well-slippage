@@ -11,7 +11,12 @@ export default function InvestigationPanel({ wellId }) {
       const result = await checkWell(wellId);
 
       if (result && result.success) {
-        setState({ status: "success", rowCount: result.row_count ?? null });
+        setState({
+          status: "success",
+          rowCount: result.row_count ?? null,
+          analysis: result.analysis ?? null,
+          analysisError: result.analysis_error ?? null,
+        });
       } else {
         setState({ status: "failure" });
       }
@@ -40,15 +45,35 @@ export default function InvestigationPanel({ wellId }) {
       </button>
 
       {state.status === "success" && (
-        <div className="banner success">
-          ✅ Well {wellId} checked successfully.
-          {state.rowCount !== null && (
-            <div className="caption">
-              {state.rowCount} rows processed and investigation.json updated in
-              the backend.
+        <>
+          <div className="banner success">
+            ✅ Well {wellId} checked successfully.
+            {state.rowCount !== null && (
+              <div className="caption">
+                {state.rowCount} rows processed and investigation.json updated in
+                the backend.
+              </div>
+            )}
+          </div>
+
+          {state.analysis && (
+            <div className="analysis">
+              <h3>Delay Analysis</h3>
+              <p>{state.analysis}</p>
+              <div className="caption">
+                Generated from the investigation evidence and the project
+                business rules.
+              </div>
             </div>
           )}
-        </div>
+
+          {!state.analysis && state.analysisError && (
+            <div className="banner warning">
+              ⚠️ Delay analysis unavailable.
+              <div className="caption">{state.analysisError}</div>
+            </div>
+          )}
+        </>
       )}
 
       {state.status === "failure" && (

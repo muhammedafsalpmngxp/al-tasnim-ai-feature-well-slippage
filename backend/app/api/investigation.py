@@ -9,6 +9,11 @@ from app.services.investigation import (
     update_investigation_json
 )
 
+from app.services.llm import (
+    LLMUnavailable,
+    analyze_well_delay
+)
+
 
 # ============================================================
 # ROUTER
@@ -77,13 +82,47 @@ def investigate_well(
         # UPDATE JSON
         # ----------------------------------------------------
 
-        update_investigation_json(
+        investigation = update_investigation_json(
             records,
             well_id
         )
 
 
         logger.info("Investigation completed successfully for well %s", well_id)
+
+
+        # ----------------------------------------------------
+        # LLM ANALYSIS
+        #
+        # Best effort: the evidence and its JSON file are the
+        # deliverable, so a failing LLM must not fail the request.
+        # ----------------------------------------------------
+
+        analysis = None
+        analysis_error = None
+
+        try:
+
+            analysis = analyze_well_delay(investigation)
+
+        except LLMUnavailable as exc:
+
+            analysis_error = str(exc)
+
+            logger.warning(
+                "Delay analysis unavailable for well %s: %s",
+                well_id,
+                exc
+            )
+
+        except Exception as exc:
+
+            analysis_error = "Delay analysis failed. Check the server logs."
+
+            logger.exception(
+                "Unexpected delay analysis failure for well %s",
+                well_id
+            )
 
 
         # ----------------------------------------------------
@@ -97,6 +136,10 @@ def investigate_well(
             "well_id": well_id,
 
             "row_count": len(records),
+
+            "analysis": analysis,
+
+            "analysis_error": analysis_error,
 
             "message":
                 "Investigation JSON updated successfully"

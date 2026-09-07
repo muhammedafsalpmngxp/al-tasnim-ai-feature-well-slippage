@@ -14,7 +14,7 @@ yet implemented.
 ```
 .
 ├── backend/                   FastAPI service
-│   ├── .env                   Database credentials (not committed)
+│   ├── .env                   Credentials + LLM settings (not committed)
 │   ├── main.py                FastAPI app entrypoint
 │   ├── requirements.txt       Backend dependencies
 │   ├── script.py              Standalone SQL Server schema/data inventory tool
@@ -22,8 +22,12 @@ yet implemented.
 │   ├── app/
 │   │   ├── api/               Route handlers (wells, investigation)
 │   │   ├── database/          DB connection helper
-│   │   ├── services/          Query execution + data cleaning
+│   │   ├── services/          Query execution, data cleaning, LLM analysis
+│   │   ├── prompts/
+│   │   │   └── prompt.py      Task prompt for the delay explanation
 │   │   └── responses/         investigation.json output (not committed)
+│   ├── prompts/
+│   │   └── business_rules.md  Authoritative PDO / Al Tasnim business rules
 │   └── sql/                    Raw SQL used by the services
 │
 ├── frontend/                   React dashboard (Vite)
@@ -71,7 +75,7 @@ yet implemented.
    pip install -r requirements.txt
    ```
 
-3. Configure the backend database connection in `backend/.env`:
+3. Configure `backend/.env`:
 
    ```
    DB_SERVER=your-server-host
@@ -81,7 +85,14 @@ yet implemented.
    DB_PASSWORD=your-password
    DB_DRIVER=ODBC Driver 17 for SQL Server
    DB_CONNECTION_TIMEOUT=30
+
+   GROK_KEY=your-groq-api-key
+   LLM_MODEL=openai/gpt-oss-120b
    ```
+
+   `GROK_KEY` and `LLM_MODEL` drive the delay analysis shown after checking a
+   well. If they are missing the investigation still runs and the JSON is still
+   written — only the written explanation is skipped.
 
 **Frontend:**
 
