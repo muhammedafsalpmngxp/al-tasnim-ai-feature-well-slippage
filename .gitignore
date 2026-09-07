@@ -5,3 +5,4 @@ __pycache__/
 app/responses/*.json
 database_inventory.txt
 .claude/
+gcm-diagnose.log
