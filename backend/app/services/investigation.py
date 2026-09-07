@@ -134,6 +134,15 @@ def clean_value(value):
                 return value.hex()
 
     # --------------------------------------------------------
+    # Booleans must be preserved before the numeric branch:
+    # bool defines __float__, so it would become 1.0 / 0.0.
+    # --------------------------------------------------------
+
+    if isinstance(value, bool):
+
+        return value
+
+    # --------------------------------------------------------
     # Decimal and similar numeric objects
     # --------------------------------------------------------
 
@@ -344,6 +353,111 @@ def get_investigation_data(
 
 
 # ============================================================
+# JSON SHAPE
+# ============================================================
+
+WELL_FIELDS = [
+    "well_id",
+    "ex_rig_on_date",
+    "rig_on_date",
+    "ex_rig_off_date",
+    "rig_off_date",
+    "pegged_date",
+    "flaf_issue_date",
+    "eng_completion_date",
+    "well_progress",
+    "flowline_progress"
+]
+
+MILESTONE_FIELDS = [
+    "pegging_status",
+    "flaf_status",
+    "construction_status",
+    "hookup_status"
+]
+
+ACTIVITY_FIELDS = [
+    "task_id",
+    "project_type",
+    "activity_id",
+    "activity_code",
+    "activity",
+    "crew",
+    "progress_percent",
+    "completed",
+    "target_start",
+    "target_end",
+    "actual_start",
+    "actual_end",
+    "remaining_duration",
+    "end_status",
+    "delay_days",
+    "execution_status",
+    "schedule_risk",
+    "target_achievability",
+    "productivity_status",
+    "resource_status"
+]
+
+
+def build_investigation_response(
+    records,
+    well_id: int
+):
+
+    """
+    Group the flat query rows into well / milestone / activity
+    sections. Well and milestone values repeat on every row, so
+    the first row carries them.
+    """
+
+    first_row = records[0] if records else {}
+
+    well = {
+        field: first_row.get(field)
+        for field in WELL_FIELDS
+    }
+
+    # The query returns nothing when a well has no delayed
+    # activities, so keep the requested well_id addressable.
+    well["well_id"] = first_row.get("well_id", well_id)
+
+    milestones = {
+        field: first_row.get(field)
+        for field in MILESTONE_FIELDS
+    }
+
+    delayed_activities = [
+        {
+            field: record.get(field)
+            for field in ACTIVITY_FIELDS
+        }
+        for record in records
+    ]
+
+    has_issue = first_row.get("has_data_quality_issue")
+
+    data_quality = {
+
+        "has_issue":
+            bool(has_issue) if has_issue is not None else None,
+
+        "schedule_evidence_level":
+            first_row.get("schedule_evidence_level"),
+
+        "data_evidence_level":
+            first_row.get("data_evidence_level")
+    }
+
+    return {
+        "well": well,
+        "milestones": milestones,
+        "delayed_activities": delayed_activities,
+        "data_quality": data_quality
+    }
+
+
+# ============================================================
 # UPDATE SINGLE JSON FILE
 # ============================================================
 
@@ -356,16 +470,10 @@ def update_investigation_json(
     # JSON response
     # --------------------------------------------------------
 
-    response = {
-
-        "success": True,
-
-        "well_id": well_id,
-
-        "row_count": len(records),
-
-        "data": records
-    }
+    response = build_investigation_response(
+        records,
+        well_id
+    )
 
 
     # --------------------------------------------------------

@@ -3,7 +3,7 @@
 Well-slippage monitoring for drilling operations. The backend flags wells whose
 rig-on/rig-off dates have slipped past their expected dates, and produces a
 deterministic SQL "evidence layer" for a single well's task-level schedule
-status. The frontend is a Streamlit dashboard for browsing slipped wells and
+status. The frontend is a React dashboard for browsing slipped wells and
 triggering a per-well investigation.
 
 LLM-based analysis on top of the investigation evidence is planned but not
@@ -26,21 +26,36 @@ yet implemented.
 │   │   └── responses/         investigation.json output (not committed)
 │   └── sql/                    Raw SQL used by the services
 │
-├── frontend/                   Streamlit dashboard
-│   ├── dashboard.py
-│   └── requirements.txt        Frontend dependencies
+├── frontend/                   React dashboard (Vite)
+│   ├── index.html
+│   ├── package.json
+│   ├── vite.config.js
+│   └── src/
+│       ├── main.jsx            React entrypoint
+│       ├── App.jsx             Page layout + data loading
+│       ├── api.js              Backend API calls
+│       ├── utils.js            Date helpers
+│       ├── index.css
+│       └── components/
+│           ├── KpiCards.jsx
+│           ├── WellsTable.jsx
+│           ├── WellDetail.jsx
+│           └── InvestigationPanel.jsx
 │
-├── requirements.txt             Convenience file: installs backend + frontend
+├── requirements.txt             Convenience file: installs backend deps
 └── .gitignore
 ```
 
 ## Prerequisites
 
 - Python 3.11+
+- Node.js 18+ and npm (for the React frontend)
 - Microsoft ODBC Driver 17 or 18 for SQL Server (used by `pyodbc`)
 - Network access to the SQL Server instance holding the `AlTasnimBI` database
 
 ## Setup
+
+**Backend:**
 
 1. Create and activate a virtual environment at the project root:
 
@@ -50,17 +65,10 @@ yet implemented.
    source .venv/bin/activate   # macOS/Linux
    ```
 
-2. Install dependencies (backend + frontend):
+2. Install backend dependencies:
 
    ```bash
    pip install -r requirements.txt
-   ```
-
-   Or install just one side:
-
-   ```bash
-   pip install -r backend/requirements.txt
-   pip install -r frontend/requirements.txt
    ```
 
 3. Configure the backend database connection in `backend/.env`:
@@ -75,6 +83,13 @@ yet implemented.
    DB_CONNECTION_TIMEOUT=30
    ```
 
+**Frontend:**
+
+```bash
+cd frontend
+npm install
+```
+
 ## Running
 
 **Backend (FastAPI):**
@@ -84,24 +99,33 @@ cd backend
 uvicorn main:app --reload
 ```
 
+Run it from inside `backend/` (not with `--app-dir backend` from the project
+root) — `python-dotenv` resolves `.env` relative to the running process in a
+way that doesn't reliably locate `backend/.env` when launched via `--app-dir`
+from a different working directory.
+
 Runs on `http://127.0.0.1:8000` by default. Key endpoints:
 
 - `GET /api/slipped-wells` — list wells with slipped rig-on/rig-off dates
 - `GET /api/well/{well_id}/investigation` — run the SQL evidence query for one
   well and write the result to `backend/app/responses/investigation.json`
 
-**Frontend (Streamlit dashboard):**
+The backend allows cross-origin requests from `http://localhost:5173` (the
+Vite dev server) via CORS middleware in `backend/main.py`.
+
+**Frontend (React):**
 
 ```bash
 cd frontend
-streamlit run dashboard.py
+npm run dev
 ```
 
-Opens in your browser (default `http://localhost:8501`). If the backend is
-not running on `http://127.0.0.1:8000`, set `API_URL` before launching:
+Opens on `http://localhost:5173` by default. If the backend is not running on
+`http://127.0.0.1:8000`, set `VITE_API_URL` before starting the dev server
+(e.g. in a `frontend/.env` file or inline):
 
 ```bash
-API_URL=http://your-backend-host:8000 streamlit run dashboard.py
+VITE_API_URL=http://your-backend-host:8000 npm run dev
 ```
 
 **Database inventory tool (optional, backend-only):**
@@ -122,3 +146,4 @@ git-ignored — do not commit it.
   git-ignored.
 - `backend/.env` and `backend/database_inventory.txt` contain sensitive
   connection details and are git-ignored.
+- `frontend/node_modules/` and `frontend/dist/` are git-ignored.
