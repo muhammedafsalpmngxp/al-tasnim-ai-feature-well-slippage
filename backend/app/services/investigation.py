@@ -4,6 +4,8 @@ import math
 import re
 from tempfile import NamedTemporaryFile
 
+import pandas as pd
+
 
 # ============================================================
 # PATH CONFIGURATION
@@ -12,6 +14,8 @@ from tempfile import NamedTemporaryFile
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 SQL_FILE = BASE_DIR / "sql" / "investigation.sql"
+
+MILESTONES_SQL_FILE = BASE_DIR / "sql" / "well_milestones.sql"
 
 JSON_DIR = BASE_DIR / "app" / "responses"
 
@@ -132,6 +136,14 @@ def clean_value(value):
             except UnicodeDecodeError:
 
                 return value.hex()
+
+    # --------------------------------------------------------
+    # Integers stay integers — IDs must not become 14.0
+    # --------------------------------------------------------
+
+    if isinstance(value, (bool, int)):
+
+        return value
 
     # --------------------------------------------------------
     # Decimal and similar numeric objects
@@ -344,29 +356,102 @@ def get_investigation_data(
 
 
 # ============================================================
+# WELL MILESTONE HEADER (authoritative, task-independent)
+# ============================================================
+
+class WellNotFoundError(Exception):
+    """Raised when a well_id has no live (non-completed) record."""
+
+
+def get_well_milestones(
+    connection,
+    well_id: int
+):
+
+    if not MILESTONES_SQL_FILE.exists():
+
+        raise FileNotFoundError(
+            f"Well milestones SQL file not found: {MILESTONES_SQL_FILE}"
+        )
+
+    query = MILESTONES_SQL_FILE.read_text(
+        encoding="utf-8"
+    )
+
+    cursor = connection.cursor()
+
+    try:
+
+        cursor.execute(
+            query,
+            well_id
+        )
+
+        if cursor.description is None:
+
+            raise ValueError(
+                "Well milestones SQL did not return a result set."
+            )
+
+        columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        row = cursor.fetchone()
+
+        if row is None:
+
+            raise WellNotFoundError(
+                f"Well {well_id} was not found or is already completed."
+            )
+
+        return {
+            column: row[index]
+            for index, column in enumerate(columns)
+        }
+
+    finally:
+
+        cursor.close()
+
+
+# ============================================================
+# WELL RISK ASSESSMENT (orchestrator)
+# ============================================================
+
+def get_well_risk_assessment(
+    connection,
+    well_id: int
+):
+
+    from app.services.risk import build_well_risk_summary
+
+    well_row = get_well_milestones(
+        connection,
+        well_id
+    )
+
+    records = get_investigation_data(
+        connection,
+        well_id
+    )
+
+    task_df = pd.DataFrame(records)
+
+    return build_well_risk_summary(
+        well_row,
+        task_df
+    )
+
+
+# ============================================================
 # UPDATE SINGLE JSON FILE
 # ============================================================
 
 def update_investigation_json(
-    records,
-    well_id: int
+    summary
 ):
-
-    # --------------------------------------------------------
-    # JSON response
-    # --------------------------------------------------------
-
-    response = {
-
-        "success": True,
-
-        "well_id": well_id,
-
-        "row_count": len(records),
-
-        "data": records
-    }
-
 
     # --------------------------------------------------------
     # Write / overwrite same JSON file
@@ -383,7 +468,7 @@ def update_investigation_json(
         suffix=".tmp",
         delete=False
     ) as file:
-        json.dump(response, file, indent=4, ensure_ascii=False, allow_nan=False)
+        json.dump(summary, file, indent=4, ensure_ascii=False, allow_nan=False)
         temporary_file = Path(file.name)
 
     temporary_file.replace(JSON_FILE)
@@ -398,4 +483,4 @@ def update_investigation_json(
     )
 
 
-    return response
+    return summary

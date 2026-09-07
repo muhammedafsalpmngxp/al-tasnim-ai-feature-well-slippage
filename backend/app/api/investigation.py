@@ -5,8 +5,9 @@ from fastapi import APIRouter, HTTPException
 from app.database.connection import get_connection
 
 from app.services.investigation import (
-    get_investigation_data,
-    update_investigation_json
+    get_well_risk_assessment,
+    update_investigation_json,
+    WellNotFoundError
 )
 
 
@@ -64,10 +65,10 @@ def investigate_well(
 
 
         # ----------------------------------------------------
-        # EXECUTE INVESTIGATION SQL
+        # BUILD RISK ASSESSMENT
         # ----------------------------------------------------
 
-        records = get_investigation_data(
+        summary = get_well_risk_assessment(
             connection,
             well_id
         )
@@ -78,8 +79,7 @@ def investigate_well(
         # ----------------------------------------------------
 
         update_investigation_json(
-            records,
-            well_id
+            summary
         )
 
 
@@ -90,18 +90,16 @@ def investigate_well(
         # API RESPONSE
         # ----------------------------------------------------
 
-        return {
+        return summary
 
-            "success": True,
 
-            "well_id": well_id,
+    except WellNotFoundError as exc:
 
-            "row_count": len(records),
-
-            "message":
-                "Investigation JSON updated successfully"
-        }
-
+        logger.warning("Well not found: %s", exc)
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc)
+        ) from exc
 
     except ValueError as exc:
 

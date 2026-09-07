@@ -6,3 +6,5 @@ backend/app/responses/*.json
 database_inventory.txt
 .claude/
 gcm-diagnose.log
+node_modules/
+frontend/dist/

@@ -1,0 +1,323 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #e2e5ea;
+  --text: #1c1f23;
+  --muted: #6b7280;
+  --red: #c0392b;
+  --amber: #b8860b;
+  --green: #217a4b;
+  --blue: #1f4e79;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+.page-header h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+}
+
+.page-header p {
+  margin: 0 0 24px;
+  color: var(--muted);
+}
+
+h2 {
+  font-size: 17px;
+  margin: 0 0 4px;
+}
+
+h3 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 28px 0 10px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* ---------- summary cards ---------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card-warning {
+  border-left: 4px solid var(--amber);
+}
+
+.card-danger {
+  border-left: 4px solid var(--red);
+}
+
+.card-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.card-label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.card-value {
+  font-size: 28px;
+  font-weight: 600;
+}
+
+/* ---------- sections ---------- */
+
+.section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 22px;
+  margin-bottom: 20px;
+}
+
+.well-picker {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 620px;
+}
+
+.well-search,
+.well-select {
+  width: 100%;
+  padding: 9px 10px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.well-search:focus,
+.well-select:focus {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+/* ---------- risk ---------- */
+
+.risk-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: stretch;
+  margin-top: 14px;
+}
+
+.risk-score {
+  min-width: 150px;
+  border-radius: 8px;
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.risk-high {
+  background: var(--red);
+}
+
+.risk-medium {
+  background: var(--amber);
+}
+
+.risk-low {
+  background: var(--green);
+}
+
+.risk-none {
+  background: var(--muted);
+}
+
+.risk-value {
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.risk-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 6px;
+  opacity: 0.9;
+}
+
+.risk-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 16px;
+  flex: 1;
+  align-content: center;
+}
+
+.fact-label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.fact-value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.note {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  background: #f0f4f8;
+  border-left: 3px solid var(--blue);
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+/* ---------- grids / tables ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+}
+
+.grid-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.badge-bad {
+  background: #fdecea;
+  color: var(--red);
+}
+
+.badge-warn {
+  background: #fdf5e3;
+  color: var(--amber);
+}
+
+.badge-good {
+  background: #e8f5ee;
+  color: var(--green);
+}
+
+.badge-neutral {
+  background: #eef0f3;
+  color: var(--muted);
+}
+
+/* The delayed-activities table is wide — scroll it, never the page. */
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.table-scroll .table {
+  min-width: 1000px;
+}
+
+.table-scroll .table th,
+.table-scroll .table td {
+  white-space: nowrap;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.table th {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---------- alerts ---------- */
+
+.alert {
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+}
+
+.alert-error {
+  background: #fdecea;
+  border: 1px solid #f5c6c2;
+  color: var(--red);
+}
+
+.alert p {
+  margin: 6px 0;
+}
+
+.alert code {
+  display: inline-block;
+  background: #fff;
+  border: 1px solid #f5c6c2;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}

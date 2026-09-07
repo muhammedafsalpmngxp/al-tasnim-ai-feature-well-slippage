@@ -14,6 +14,10 @@ from app.services.slipped_wells import (
     get_slipped_wells
 )
 
+from app.services.summary import (
+    get_well_summary
+)
+
 
 router = APIRouter(
     prefix="/api",
@@ -53,6 +57,45 @@ def clean_value(value):
         return value.isoformat()
 
     return value
+
+
+# ============================================================
+# GET WELL SUMMARY
+# ============================================================
+
+@router.get("/wells/summary")
+def wells_summary():
+
+    connection = None
+
+    try:
+
+        connection = get_connection()
+
+        return get_well_summary(
+            connection
+        )
+
+    except ValueError as exc:
+        logger.warning("Unable to load well summary: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Database configuration is invalid or incomplete."
+        ) from exc
+
+    except Exception:
+        logger.exception("Unable to load well summary")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to load well summary. Check the server logs."
+        )
+
+    finally:
+
+        if connection:
+
+            connection.close()
 
 
 # ============================================================

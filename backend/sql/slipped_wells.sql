@@ -1,39 +1,325 @@
+/* ============================================================
+   AL-TASNIM
+   WELL SLIPPAGE AI
+   SLIPPED WELL DETECTION
+
+   PURPOSE:
+       Identify every live well that is slipping, across all
+       measurable milestones — not just rig-on / rig-off.
+
+   NULL SAFETY:
+       Source data is incomplete, so every test below is anchored
+       on a column that is reliably populated:
+
+         - ex_rig_on_date  / ex_rig_off_date  are 100% populated
+           and are used as the baselines.
+         - A test that needs an ACTUAL date only fires when that
+           date is present (e.g. hook-up needs rig_off_date).
+         - const_complete_date, scr_date and tie_in_ready_date are
+           deliberately NOT used as slip tests: they are 34%, 43%
+           and 68% populated, so a NULL there means "not recorded"
+           far more often than "late".
+
+       Construction therefore uses the same NULL-safe rule as
+       investigation.sql: past ex_rig_on - 1 day with no rig_on.
+
+   DUE / NON-DUE:
+       kpi_miss_reason attributes the delay. FLAF/SCR/PDO-side
+       causes are classified NON_DUE (bonus potential) rather than
+       counted as Tasnim-side risk.
+   ============================================================ */
+
+
+DECLARE @Today DATE = CAST(GETDATE() AS DATE);
+
+
+WITH LiveWells AS
+(
+    SELECT
+        well_id,
+        project_id,
+        rig_id,
+        well_type_id,
+        station_id,
+
+        ex_rig_on_date,
+        rig_on_date,
+        ex_rig_off_date,
+        rig_off_date,
+
+        pegged_date,
+        flaf_issue_date,
+        eng_completion_date,
+
+        kpi_miss_reason
+
+    FROM [AlTasnimBI].[well].[well_master]
+
+    WHERE eng_completion_date IS NULL
+),
+
+
+Signals AS
+(
+    SELECT
+        lw.*,
+
+
+        /* ----- RIG-ON: recorded but late ----- */
+        CASE
+            WHEN lw.ex_rig_on_date IS NOT NULL
+             AND lw.rig_on_date IS NOT NULL
+             AND lw.rig_on_date > lw.ex_rig_on_date
+                THEN DATEDIFF(day, lw.ex_rig_on_date, lw.rig_on_date)
+            ELSE 0
+        END AS rig_on_late_days,
+
+
+        /* ----- RIG-ON: not recorded, deadline passed ----- */
+        CASE
+            WHEN lw.ex_rig_on_date IS NOT NULL
+             AND lw.rig_on_date IS NULL
+             AND lw.ex_rig_on_date < @Today
+                THEN DATEDIFF(day, lw.ex_rig_on_date, @Today)
+            ELSE 0
+        END AS rig_on_pending_days,
+
+
+        /* ----- RIG-OFF: recorded but late ----- */
+        CASE
+            WHEN lw.ex_rig_off_date IS NOT NULL
+             AND lw.rig_off_date IS NOT NULL
+             AND lw.rig_off_date > lw.ex_rig_off_date
+                THEN DATEDIFF(day, lw.ex_rig_off_date, lw.rig_off_date)
+            ELSE 0
+        END AS rig_off_late_days,
+
+
+        /* ----- RIG-OFF: not recorded, deadline passed ----- */
+        CASE
+            WHEN lw.ex_rig_off_date IS NOT NULL
+             AND lw.rig_off_date IS NULL
+             AND lw.ex_rig_off_date < @Today
+                THEN DATEDIFF(day, lw.ex_rig_off_date, @Today)
+            ELSE 0
+        END AS rig_off_pending_days,
+
+
+        /* ----- HOOK-UP: rig-off + 2 days passed, not complete -----
+           Only fires when rig_off_date exists, so a missing
+           rig_off_date can never be mistaken for a slip. */
+        CASE
+            WHEN lw.rig_off_date IS NOT NULL
+             AND @Today > DATEADD(day, 2, lw.rig_off_date)
+                THEN DATEDIFF(day, DATEADD(day, 2, lw.rig_off_date), @Today)
+            ELSE 0
+        END AS hookup_overdue_days,
+
+
+        /* ----- CONSTRUCTION: past ex_rig_on - 1d, no rig-on ----- */
+        CASE
+            WHEN lw.ex_rig_on_date IS NOT NULL
+             AND lw.rig_on_date IS NULL
+             AND @Today > DATEADD(day, -1, lw.ex_rig_on_date)
+                THEN DATEDIFF(day, DATEADD(day, -1, lw.ex_rig_on_date), @Today)
+            ELSE 0
+        END AS construction_overdue_days,
+
+
+        /* ----- PEGGING: recorded after the -60d deadline ----- */
+        CASE
+            WHEN lw.ex_rig_on_date IS NOT NULL
+             AND lw.pegged_date IS NOT NULL
+             AND lw.pegged_date > DATEADD(day, -60, lw.ex_rig_on_date)
+                THEN DATEDIFF(
+                        day,
+                        DATEADD(day, -60, lw.ex_rig_on_date),
+                        lw.pegged_date
+                     )
+            ELSE 0
+        END AS pegging_late_days,
+
+
+        /* ----- PEGGING: not recorded, -60d deadline passed ----- */
+        CASE
+            WHEN lw.ex_rig_on_date IS NOT NULL
+             AND lw.pegged_date IS NULL
+             AND @Today > DATEADD(day, -60, lw.ex_rig_on_date)
+                THEN DATEDIFF(
+                        day,
+                        DATEADD(day, -60, lw.ex_rig_on_date),
+                        @Today
+                     )
+            ELSE 0
+        END AS pegging_missed_days,
+
+
+        /* ----- FLAF: issued after the -90d deadline ----- */
+        CASE
+            WHEN lw.ex_rig_on_date IS NOT NULL
+             AND lw.flaf_issue_date IS NOT NULL
+             AND lw.flaf_issue_date > DATEADD(day, -90, lw.ex_rig_on_date)
+                THEN DATEDIFF(
+                        day,
+                        DATEADD(day, -90, lw.ex_rig_on_date),
+                        lw.flaf_issue_date
+                     )
+            ELSE 0
+        END AS flaf_late_days,
+
+
+        /* ----- FLAF: not issued, -90d deadline passed ----- */
+        CASE
+            WHEN lw.ex_rig_on_date IS NOT NULL
+             AND lw.flaf_issue_date IS NULL
+             AND @Today > DATEADD(day, -90, lw.ex_rig_on_date)
+                THEN DATEDIFF(
+                        day,
+                        DATEADD(day, -90, lw.ex_rig_on_date),
+                        @Today
+                     )
+            ELSE 0
+        END AS flaf_missed_days,
+
+
+        /* ----- DATA QUALITY: impossible date ordering ----- */
+        CASE
+            WHEN lw.rig_off_date IS NOT NULL
+             AND lw.rig_on_date IS NOT NULL
+             AND lw.rig_off_date < lw.rig_on_date
+                THEN 1
+            ELSE 0
+        END AS dq_rig_off_before_rig_on,
+
+
+        CASE
+            WHEN lw.ex_rig_on_date IS NULL
+              OR lw.ex_rig_off_date IS NULL
+                THEN 1
+            ELSE 0
+        END AS dq_missing_baseline,
+
+
+        /* ----- DATA QUALITY: actual implausibly far before plan -----
+           Finishing early is normal; an actual date more than 180
+           days before its baseline means the two were maintained
+           against different schedules, which inflates the computed
+           lateness. */
+        CASE
+            WHEN (
+                    lw.rig_on_date IS NOT NULL
+                AND lw.ex_rig_on_date IS NOT NULL
+                AND DATEDIFF(day, lw.rig_on_date, lw.ex_rig_on_date) > 180
+                 )
+              OR (
+                    lw.rig_off_date IS NOT NULL
+                AND lw.ex_rig_off_date IS NOT NULL
+                AND DATEDIFF(day, lw.rig_off_date, lw.ex_rig_off_date) > 180
+                 )
+                THEN 1
+            ELSE 0
+        END AS dq_actual_far_before_plan
+
+        /* DUE / NON-DUE is derived from kpi_miss_reason in
+           app/services/attribution.py — one definition, shared
+           with the per-well risk assessment. */
+
+    FROM LiveWells AS lw
+),
+
+
+Scored AS
+(
+    SELECT
+        s.*,
+
+        CASE WHEN s.rig_on_late_days > 0
+                  OR s.rig_on_pending_days > 0
+             THEN 1 ELSE 0 END AS slip_rig_on,
+
+        CASE WHEN s.rig_off_late_days > 0
+                  OR s.rig_off_pending_days > 0
+             THEN 1 ELSE 0 END AS slip_rig_off,
+
+        CASE WHEN s.hookup_overdue_days > 0
+             THEN 1 ELSE 0 END AS slip_hookup,
+
+        CASE WHEN s.construction_overdue_days > 0
+             THEN 1 ELSE 0 END AS slip_construction,
+
+        CASE WHEN s.pegging_late_days > 0
+                  OR s.pegging_missed_days > 0
+             THEN 1 ELSE 0 END AS slip_pegging,
+
+        CASE WHEN s.flaf_late_days > 0
+                  OR s.flaf_missed_days > 0
+             THEN 1 ELSE 0 END AS slip_flaf,
+
+        /* Worst lateness across every milestone measured. */
+        (
+            SELECT MAX(value)
+            FROM (VALUES
+                (s.rig_on_late_days),
+                (s.rig_on_pending_days),
+                (s.rig_off_late_days),
+                (s.rig_off_pending_days),
+                (s.hookup_overdue_days),
+                (s.construction_overdue_days),
+                (s.pegging_late_days),
+                (s.pegging_missed_days),
+                (s.flaf_late_days),
+                (s.flaf_missed_days)
+            ) AS milestone_lateness(value)
+        ) AS delay_days
+
+    FROM Signals AS s
+)
+
+
 SELECT
     well_id,
     project_id,
     rig_id,
     well_type_id,
     station_id,
+
     ex_rig_on_date,
     rig_on_date,
     ex_rig_off_date,
-    rig_off_date
-FROM [AlTasnimBI].[well].[well_master]
-WHERE
-    (
-        ex_rig_on_date IS NOT NULL
-        AND
-        (
-            rig_on_date > ex_rig_on_date
-            OR
-            (
-                rig_on_date IS NULL
-                AND ex_rig_on_date < CAST(GETDATE() AS DATE)
-            )
-        )
-    )
-    OR
-    (
-        ex_rig_off_date IS NOT NULL
-        AND
-        (
-            rig_off_date > ex_rig_off_date
-            OR
-            (
-                rig_off_date IS NULL
-                AND ex_rig_off_date < CAST(GETDATE() AS DATE)
-            )
-        )
-    )
+    rig_off_date,
+
+    pegged_date,
+    flaf_issue_date,
+
+    delay_days,
+
+    slip_rig_on,
+    slip_rig_off,
+    slip_hookup,
+    slip_construction,
+    slip_pegging,
+    slip_flaf,
+
+    hookup_overdue_days,
+    construction_overdue_days,
+    pegging_missed_days,
+    flaf_missed_days,
+
+    kpi_miss_reason,
+
+    dq_rig_off_before_rig_on,
+    dq_missing_baseline,
+    dq_actual_far_before_plan
+
+FROM Scored
+
+WHERE slip_rig_on = 1
+   OR slip_rig_off = 1
+   OR slip_hookup = 1
+   OR slip_construction = 1
+   OR slip_pegging = 1
+   OR slip_flaf = 1
+
 ORDER BY
-    ex_rig_on_date;
+    delay_days DESC,
+    well_id;
