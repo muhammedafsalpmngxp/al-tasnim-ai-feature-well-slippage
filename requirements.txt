@@ -1,7 +1,2 @@
-fastapi
-pandas
-pyodbc
-python-dotenv
-requests
-streamlit
-uvicorn[standard]
+-r backend/requirements.txt
+-r frontend/requirements.txt

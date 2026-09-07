@@ -2,7 +2,7 @@
 .venv/
 __pycache__/
 *.py[cod]
-app/responses/*.json
+backend/app/responses/*.json
 database_inventory.txt
 .claude/
 gcm-diagnose.log

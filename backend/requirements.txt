@@ -1,0 +1,5 @@
+fastapi
+pandas
+pyodbc
+python-dotenv
+uvicorn[standard]
