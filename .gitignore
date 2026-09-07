@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+app/responses/*.json
+database_inventory.txt
+.claude/
