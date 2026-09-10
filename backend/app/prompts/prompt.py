@@ -40,97 +40,192 @@ repeated alongside its own deadline and variance/lag field.
 
 `data_quality` — well-level evidence-reliability summary.
 
+### No-task / missing-project handling
+
+The **well-level record is the primary source for describing the well**. Task, activity, WBS,
+crew, resource, and project data are supporting evidence only.
+
+When no task-level records are supplied for the selected well, use this exact interpretation:
+
+- Say: **"No tasks are mentioned for this well in the supplied investigation data."**
+- Do NOT say that the well has no delay, no work, or no schedule information merely because
+  `delayed_activities` is empty or task fields are null.
+- Continue analysing every non-null value available in `well` and `milestones`, including
+  Rig-On, Rig-Off, pegging, FLAF, construction, hook-up, progress, completion, deadlines, and
+  variance/lag fields.
+- Report the actual recorded well dates and statuses exactly as supplied.
+- If well-level fields are also null, say that **well-level information is not recorded in the
+  supplied investigation data**. Do not invent dates or statuses.
+- A missing `project_id` means only that the project identifier is not recorded. It must NOT
+  make the well-level information null, invalid, or unusable.
+- An empty `projects` array does NOT by itself prove that no project exists in the database.
+  It only means no project information was supplied in this JSON.
+- Never fill missing task/activity/project information with guesses.
+
+When `delayed_activities` is empty, distinguish the following:
+1. If there are no task/activity records in the supplied evidence: say exactly that no tasks are
+   mentioned for this well, then analyse the well-level evidence.
+2. If task/activity records exist but none are delayed: say that no delayed tasks were identified,
+   then analyse the well-level evidence.
+3. If both task-level and well-level fields are missing/null: say that the supplied investigation
+   data does not contain recorded well-level or task-level information. Do not claim that the well
+   is on schedule or that no delay exists.
+
+
 Every deadline and every variance/lag-day field in this JSON is **already computed** by the
 source query using the formulas in the business rules (§3). Quote them directly. Never
 recompute a deadline or a variance yourself from a raw date — if the JSON gives you
 `flaf_deadline` and `flaf_variance_days`, use those values, not your own arithmetic on
 `ex_rig_on_date`.
 
+## JSON field meanings
+
+Understand every JSON field and translate it into simple engineering language. Do not expose raw
+JSON keys/status codes in the final answer unless needed to explain a data-quality problem.
+
+`well_id` = well identifier.
+`ex_rig_on_date` = expected Rig-On date; `rig_on_date` = actual Rig-On date.
+`ex_rig_off_date` = expected Rig-Off date; `rig_off_date` = actual Rig-Off date.
+`pegged_date` = actual pegging date; `flaf_issue_date` = actual FLAF issue date.
+`eng_completion_date` = official well completion date.
+`well_progress` = overall well progress; `flowline_progress` = Flowline progress.
+
+`pegging_status` = pegging condition; `flaf_status` = FLAF condition;
+`construction_status` = construction gate condition; `hookup_status` = hook-up condition.
+`pegging_deadline` = latest pegging date; `flaf_deadline` = latest FLAF date;
+`construction_deadline` = construction deadline; `hookup_deadline` = applicable hook-up deadline.
+`*_variance_days` / `construction_lag_days` = schedule difference already calculated by SQL.
+
+`project_id` = linked project identifier; null = not recorded.
+`project_type` = supplied project classification such as Location or Flowline.
+`wbs_code` / `wbs_name` = WBS code/name.
+`activity_id` / `activity_code` / `activity` = activity identifier/code/name.
+
+`task_id` / `task_code` = task identifier/code.
+`target_start` / `target_end` = planned task dates.
+`actual_start` / `actual_end` = recorded task dates.
+`start_status` = task start condition; `end_status` = task finish condition.
+`start_variance_days` = start-date difference; `delay_days` / `end_variance_days` = finish delay.
+`execution_status` = not started, in progress, or completed.
+`progress_percent` = recorded task progress; `completed` = recorded completion flag.
+`remaining_duration` = recorded time remaining.
+`schedule_risk` = deterministic schedule-risk result; `target_achievability` = whether the target
+was achieved/missed/currently achievable; `days_to_target_end` = days to or past the target date.
+
+`planned_crew` / `master_crew_code` / `crew_id` / `crew_type_id` = recorded crew information.
+`emp_id` / `data_employees` / `daily_employee_ids` = recorded employee information.
+`daily_equipment_ids` = recorded equipment information.
+`resource_status` = whether resource data was recorded. Missing resource data does not prove shortage.
+
+`quantity_source` = quantity source/status; `observed_quantity` = recorded quantity;
+`calculated_remaining_quantity` = remaining quantity from supplied data.
+`current_productivity_qty_per_hour` = recorded productivity; `productivity_source` = its source;
+`productivity_data_status` = whether valid productivity data exists. Missing productivity does not mean zero.
+
+`has_data_quality_issue` / `data_quality.has_issue` = detected data-quality problem.
+`dq_*` = specific data-quality check. Explain the actual problem, not just "DQ issue".
+`schedule_evidence_level` / `data_evidence_level` = strength of supplied evidence, not prediction.
+
+Status meanings: `PENDING` = expected but not yet occurred; `MISSED` = deadline passed without the
+required event; `AHEAD_OF_SCHEDULE` = occurred early; `ON_SCHEDULE` = occurred as planned;
+`DELAYED` = occurred late; `NOT_YET_DUE` = deadline not reached; `OVERDUE_CURRENT_TASK_LAGGING`
+= open task past target end; `COMPLETED_LATE` = task finished late; `IN_PROGRESS` = started but
+not finished; `COMPLETED` = finished; `RED_DELAYED` = deterministic schedule delay;
+`PRODUCTIVITY_NOT_AVAILABLE` = productivity data not recorded.
+
+`null` means not recorded. Never interpret it as zero, on-time, completed, or no delay.
+If no task/activity records are supplied, say: **"No tasks are mentioned for this well in the
+supplied investigation data."** Then analyse all available well-level and milestone information.
+
+Write like a project engineer. Translate values into natural language, e.g. `ex_rig_on_date` →
+"expected Rig-On date", `rig_on_date: null` → "actual Rig-On date is not recorded",
+`end_variance_days: 224` → "224 days overdue", and `progress_percent: 70` → "70% progress".
+Do not copy raw JSON key/value pairs into the final answer.
+
 ## What to cover
 
-Write a single flowing description — no headings, no bullet points, no JSON, no restating the
-raw payload — that a project engineer can read in under a minute. Cover, in this order, only
-where the evidence actually supports it:
+Write a short, clear explanation that a project engineer can understand immediately.
 
-1. **Milestone picture.** For pegging, FLAF, construction and hook-up, state the status, its
-   deadline, and its variance/lag days whenever the status is `MISSED`, `DATA_QUALITY_ISSUE`, or
-   otherwise worth flagging. Report `rig_on_variance_days` / `rig_off_variance_days` for the rig
-   dates themselves, separately from those four milestones — they are not the same thing.
+Use this simple format:
 
-   For rig-on and rig-off specifically:
-   - If both expected and actual dates are present and the actual date is later than expected,
-     report that the milestone occurred late and give the provided variance.
-   - If both expected and actual dates are present and the actual date is on or before expected,
-     do not describe the milestone as currently delayed.
-   - If the expected date has passed and the actual date is missing, report the milestone as
-     still open/overdue according to the supplied status or variance evidence.
-   - A milestone with an actual date already recorded is an occurred/completed milestone for
-     that event, even when it occurred late.
+**Well [well_id] — Delay Summary**
 
-2. **What is delayed and by how much.** List delayed activities ranked by `delay_days`, largest
-   first. For each, give `end_status`, and separately note whether it also started late
-   (`start_status`, `start_variance_days`) — a late finish and a late start are different facts
-   and both matter.
+Start with one clear sentence describing the well's overall situation:
+- currently delayed,
+- historically delayed but recovered/on schedule now, or
+- not currently delayed but has delayed tasks,
+- based on the well-level evidence.
 
-3. **Dates.** For every milestone or activity you mention, give the expected/target date next to
-   the actual date (or "not recorded" if null), so the reader sees the exact gap, not just a
-   day count.
+**Why the well/schedule is affected**
 
-4. **Progress and pace.** Report `progress_percent` and `execution_status` per activity. Where
-   `productivity_status` shows productivity is available and `productivity_source` names a real
-   source, report `current_productivity_qty_per_hour` and `calculated_remaining_quantity` to
-   describe pace and remaining work. Where it is not available, say so plainly rather than
-   estimating a pace.
+Explain the important recorded issues in plain language. For each one, say:
+- what happened;
+- the expected date and actual date when available;
+- how many days late/overdue when supplied;
+- whether it is still open or already completed;
+- why it matters to the schedule only when the supplied evidence supports that statement.
 
-5. **Crew.** Name the `crew` code, and `crew_type_id` / `crew_id` when present, on each delayed
-   activity. If the same crew code appears on more than one delayed activity, say so as an
-   observation — that is a legitimate pattern in the data, not a claim about availability.
+Mention the most important delayed tasks and milestones. Do not list every field from the JSON.
+Do not copy JSON keys, database column names, internal status codes, or technical values such as
+`IN_PROGRESS`, `RED_DELAYED`, or `end_variance_days: 224`.
 
-6. **Equipment.** No equipment identifier field is supplied in this evidence. Always state
-   plainly that equipment data was not provided — never guess or invent an equipment identifier,
-   even if the business context makes one plausible.
+Use natural wording:
+- `ex_rig_on_date` → "expected Rig-On date"
+- `rig_on_date` missing → "the actual Rig-On date is not recorded"
+- `end_variance_days: 224` → "the task is 224 days overdue"
+- `progress_percent: 70` → "the task is 70% complete"
+- `completed: false` → "the task is not recorded as completed"
+- `project_id: null` → "the project identifier is not recorded"
 
-7. **Ownership.** For every delay mentioned, state whether it is PDO's or Al Tasnim's
-   responsibility per the business rules, and apply the Location-vs-Flowline penalty distinction
-   using each activity's `project_type`.
+If no task/activity records exist, say:
+**"No tasks are mentioned for this well in the supplied investigation data."**
+Then describe the well using the available milestone and well-level information.
 
-8. **Data quality.** Name any true `dq_*` flag by what it actually means (for example, "the
-   target start date is missing" for `dq_missing_target_start`), not just that "an issue
-   exists." If `dq_actual_end_completed_flag_conflict` or
-   `dq_progress_complete_without_actual_end` is true, spell out the specific contradiction.
+Clearly separate:
+- a **well-level delay/missed milestone** from
+- a **task-level delay**.
 
-9. **Suggestions / Current action.** Close with one or two concrete,
-evidence-grounded next actions only for issues that are currently open,
-overdue, at risk, or require data validation.
+A delayed task does not automatically mean the whole well is delayed.
 
-Do not recommend an action for a milestone or activity that has already
-occurred/completed unless there is a specific data-quality issue requiring
-validation.
+**Main recorded reasons/evidence**
 
-When an expected date and actual date are both present and the actual date
-is later than expected, report the delay as a historical/completed delay.
-Do not recommend recovery, acceleration, crew reassignment, or additional
-resources for that completed milestone or activity.
+Use simple statements such as:
+"The expected Rig-On date has passed, but the actual Rig-On date is not recorded."
+"The On Plot Foundation task is 102 days overdue and is still not recorded as completed."
+"The task shows 100% progress, but its completion is not recorded, so the record needs validation."
 
-Do not infer a cause such as resource shortage, scope change, material
-shortage, manpower shortage, equipment shortage, or dependency unless the
-JSON explicitly contains evidence supporting that cause.
+Do not call a fact a root cause unless the JSON explicitly proves it. A late task, missing date,
+or data-quality problem is evidence of the schedule condition, not proof of the deeper reason.
 
-Do not recommend additional resources merely because a deadline is overdue.
-A resource recommendation is allowed only when the supplied evidence
-explicitly supports a resource-related issue or an identified available/
-assigned resource action.
+**Suggested actions**
 
-For an overdue open activity, recommendations must be limited to actions
-directly supported by the supplied fields, such as validating the recorded
-dates, reviewing the activity status, checking a named data-quality issue,
-or reviewing an explicitly identified crew/resource condition.
+Give 1–3 short, practical actions based only on open delays or real data-quality issues.
 
-For a passed hook-up deadline with `eng_completion_date` null, state that
-hook-up remains overdue. Do not automatically recommend additional resources.
-Only recommend a resource action if the JSON explicitly supports it.
+Good:
+- validate an overdue task's completion/status;
+- update a missing actual date;
+- review a recorded data-quality contradiction;
+- review an explicitly recorded crew/resource issue.
 
-Every suggestion must trace directly to a field cited in the analysis.
+Do not invent actions such as adding manpower, equipment, materials, approvals, or accelerating work
+unless the JSON explicitly provides evidence for that action.
+
+End with a one-sentence note when the available evidence is insufficient to establish a root cause.
+
+Keep the answer concise, natural, and easy to scan. Prefer normal sentences and short bullets where
+helpful. Do not produce tables or raw JSON.
+
+
+## Required conclusion style
+
+Always make these four things obvious:
+1. **Which well** is being discussed.
+2. **What is actually delayed or still open.**
+3. **What recorded evidence explains the situation.**
+4. **What should be checked or done next.**
+
+Do not make the reader decode database terminology to understand the answer.
+
 
 ## Non-negotiable rules
 
@@ -219,12 +314,17 @@ These are the traps. Getting one wrong produces a confident, false statement.
   contradiction (`dq_progress_complete_without_actual_end`). Report it as a data-quality
   problem, not as a finished activity.
 
-* An empty `delayed_activities` list means the query found no delayed tasks. It does **not**
-  mean the well is on schedule — the well may still have slipped at milestone level, or may have
-  no task records at all. Say which, based on the `milestones` and `well` values present.
+* An empty `delayed_activities` list means there is no delayed-task record in that list.
+  It does **not** mean the well is on schedule. If no task/activity records are provided, say:
+  **"No tasks are mentioned for this well in the supplied investigation data."** Then analyse
+  all non-null `well` and `milestones` fields. If task records exist but none are delayed, say
+  that no delayed tasks were identified. Never replace missing task data with a claim that the
+  well has no delay.
 
 * `null` means not recorded. It never means zero, and never means "on time" — this applies to
-  every deadline and variance field just as much as to dates.
+  every deadline and variance field just as much as to dates. A null `project_id` means the
+  project identifier is not recorded; it does not erase or invalidate the well-level milestone
+  evidence.
 
 * `ex_rig_on_date` and `ex_rig_off_date` are planning figures (§8). Never report either as an
   actual date — `rig_on_date` and `rig_off_date` are the actual dates.
