@@ -354,17 +354,38 @@ def get_investigation_data(
 
 # ============================================================
 # JSON SHAPE
+#
+# well
+# └── projects[]           grouped by (project_id, project_type)
+#     └── wbs[]             grouped by (wbs_code, wbs_name)
+#         └── activities[]  grouped by (activity_id, activity_code, activity)
+#             └── tasks[]   one entry per delayed/at-risk task row
+#
+# Several of the fields below are not yet projected by
+# investigation.sql's final SELECT (task_code, project_id, wbs_code,
+# wbs_name, crew_type_id, crew_id, emp_id, data_employees,
+# daily_employee_ids, daily_equipment_ids, quantity_source,
+# observed_quantity, calculated_remaining_quantity,
+# current_productivity_qty_per_hour, productivity_source,
+# start_status, start_variance_days). Using .get() means those
+# arrive as null today rather than raising — they will populate
+# once the SQL projection is widened to include them.
 # ============================================================
 
 WELL_FIELDS = [
     "well_id",
+
     "ex_rig_on_date",
     "rig_on_date",
+
     "ex_rig_off_date",
     "rig_off_date",
+
     "pegged_date",
     "flaf_issue_date",
+
     "eng_completion_date",
+
     "well_progress",
     "flowline_progress"
 ]
@@ -376,28 +397,145 @@ MILESTONE_FIELDS = [
     "hookup_status"
 ]
 
-ACTIVITY_FIELDS = [
-    "task_id",
-    "project_type",
-    "activity_id",
-    "activity_code",
-    "activity",
-    "crew",
-    "progress_percent",
-    "completed",
-    "target_start",
-    "target_end",
-    "actual_start",
-    "actual_end",
-    "remaining_duration",
-    "end_status",
-    "delay_days",
-    "execution_status",
-    "schedule_risk",
-    "target_achievability",
-    "productivity_status",
-    "resource_status"
-]
+
+def _task_from_record(record):
+
+    return {
+
+        "task_id": record.get("task_id"),
+        "task_code": record.get("task_code"),
+
+        "schedule": {
+            "target_start": record.get("target_start"),
+            "target_end": record.get("target_end"),
+            "actual_start": record.get("actual_start"),
+            "actual_end": record.get("actual_end"),
+            "start_status": record.get("start_status"),
+            "end_status": record.get("end_status"),
+            "start_variance_days": record.get("start_variance_days"),
+            "end_variance_days": record.get("delay_days")
+        },
+
+        "execution": {
+            "progress_percent": record.get("progress_percent"),
+            "completed": record.get("completed"),
+            "execution_status": record.get("execution_status"),
+            "schedule_risk": record.get("schedule_risk")
+        },
+
+        "crew": {
+
+            # The SQL currently exposes only the merged value
+            # (COALESCE(master_crew_code, planned_crew)) as "crew".
+            # Placed under master_crew_code as the best available
+            # approximation until the two are selected separately.
+            "planned_crew": None,
+            "master_crew_code": record.get("crew"),
+
+            "crew_type_id": record.get("crew_type_id"),
+            "crew_id": record.get("crew_id")
+        },
+
+        "resources": {
+            "emp_id": record.get("emp_id"),
+            "data_employees": record.get("data_employees"),
+            "daily_employee_ids": record.get("daily_employee_ids"),
+            "daily_equipment_ids": record.get("daily_equipment_ids")
+        },
+
+        "quantity": {
+            "quantity_source": record.get("quantity_source"),
+            "observed_quantity": record.get("observed_quantity"),
+            "calculated_remaining_quantity":
+                record.get("calculated_remaining_quantity")
+        },
+
+        "productivity": {
+            "current_productivity_qty_per_hour":
+                record.get("current_productivity_qty_per_hour"),
+            "productivity_source": record.get("productivity_source"),
+            "productivity_data_status": record.get("productivity_status")
+        },
+
+        "data_quality": {
+            "has_data_quality_issue": record.get("has_data_quality_issue")
+        }
+    }
+
+
+def _group_into_projects(records):
+
+    """
+    Fold the flat task rows into project -> wbs -> activity -> task.
+    Dicts are used as ordered, de-duplicating buckets while grouping,
+    then flattened into arrays for the final JSON.
+    """
+
+    projects = {}
+
+    for record in records:
+
+        project_key = (
+            record.get("project_id"),
+            record.get("project_type")
+        )
+
+        project = projects.setdefault(
+            project_key,
+            {
+                "project_id": record.get("project_id"),
+                "project_type": record.get("project_type"),
+                "wbs": {}
+            }
+        )
+
+        wbs_key = (
+            record.get("wbs_code"),
+            record.get("wbs_name")
+        )
+
+        wbs = project["wbs"].setdefault(
+            wbs_key,
+            {
+                "wbs_code": record.get("wbs_code"),
+                "wbs_name": record.get("wbs_name"),
+                "activities": {}
+            }
+        )
+
+        activity_key = (
+            record.get("activity_id"),
+            record.get("activity_code"),
+            record.get("activity")
+        )
+
+        activity = wbs["activities"].setdefault(
+            activity_key,
+            {
+                "activity_id": record.get("activity_id"),
+                "activity_code": record.get("activity_code"),
+                "activity": record.get("activity"),
+                "tasks": []
+            }
+        )
+
+        activity["tasks"].append(
+            _task_from_record(record)
+        )
+
+    result = []
+
+    for project in projects.values():
+
+        project["wbs"] = list(project["wbs"].values())
+
+        for wbs in project["wbs"]:
+
+            wbs["activities"] = list(wbs["activities"].values())
+
+        result.append(project)
+
+    return result
 
 
 def build_investigation_response(
@@ -406,8 +544,8 @@ def build_investigation_response(
 ):
 
     """
-    Group the flat query rows into well / milestone / activity
-    sections. Well and milestone values repeat on every row, so
+    Build the well -> projects -> wbs -> activities -> tasks
+    hierarchy. Well and milestone values repeat on every row, so
     the first row carries them.
     """
 
@@ -422,22 +560,14 @@ def build_investigation_response(
     # activities, so keep the requested well_id addressable.
     well["well_id"] = first_row.get("well_id", well_id)
 
-    milestones = {
+    well["milestones"] = {
         field: first_row.get(field)
         for field in MILESTONE_FIELDS
     }
 
-    delayed_activities = [
-        {
-            field: record.get(field)
-            for field in ACTIVITY_FIELDS
-        }
-        for record in records
-    ]
-
     has_issue = first_row.get("has_data_quality_issue")
 
-    data_quality = {
+    well["data_quality"] = {
 
         "has_issue":
             bool(has_issue) if has_issue is not None else None,
@@ -449,11 +579,10 @@ def build_investigation_response(
             first_row.get("data_evidence_level")
     }
 
+    well["projects"] = _group_into_projects(records)
+
     return {
-        "well": well,
-        "milestones": milestones,
-        "delayed_activities": delayed_activities,
-        "data_quality": data_quality
+        "well": well
     }
 
 

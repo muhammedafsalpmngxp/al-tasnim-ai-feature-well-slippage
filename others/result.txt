@@ -1,0 +1,54 @@
+Delay Analysis of well 33127
+The well’s schedule shows that the pegging sheet and FLAF were issued well ahead of their required dates, with pegging issued on 2024‑03‑06 against a pegging deadline of 2031‑03‑01 (ex_rig_on_date − 60 days) and FLAF issued on 2024‑03‑10 against a FLAF deadline of 2031‑02‑09 (ex_rig_on_date − 90 days). Both milestones are marked **AHEAD_OF_SCHEDULE** (pegging_status = AHEAD_OF_SCHEDULE, flaf_status = AHEAD_OF_SCHEDULE). The construction milestone is **RIG_ON_OCCURRED** (construction_status = RIG_ON_OCCURRED), indicating that the rig has already arrived on 2026‑05‑17, which is earlier than the planned rig‑on date of 2031‑05‑10, so construction is not flagged as missed. The hook‑up milestone shows **HOOKUP_DEADLINE_PASSED** (hookup_status = HOOKUP_DEADLINE_PASSED) with a hook‑up deadline of 2026‑05‑19 (rig_off_date + 2 days) and no actual completion date (eng_completion_date = null), so the hook‑up deadline has been missed.
+
+**Delayed activities**
+
+1. **LV / HV Cable Trench** (activity_id = FLCV1260, task_id = 80463)  
+   - End status: OVERDUE_CURRENT_TASK_LAGGING (end_status = OVERDUE_CURRENT_TASK_LAGGING)  
+   - End variance: 223 days (end_variance_days = 223)  
+   - Start status: null (start_status = null) – no start‑lag information is available.  
+   - Target start: 2026‑01‑28, actual start: 2026‑03‑15 (gap = 47 days).  
+   - Target end: 2026‑01‑29, actual end: not recorded (actual_end = null).  
+   - Progress: 70 % (progress_percent = 70) and still in progress (execution_status = IN_PROGRESS).  
+   - Crew: code CCL0803 (crew_type_id = null, crew_id = null).  
+   - Productivity: not available (productivity_status = PRODUCTIVITY_NOT_AVAILABLE).  
+   - Data‑quality issue: has_data_quality_issue = 1.0.
+
+2. **On Plot Foundation** (activity_id = FLCV1330, task_id = 79909)  
+   - End status: OVERDUE_CURRENT_TASK_LAGGING (end_status = OVERDUE_CURRENT_TASK_LAGGING)  
+   - End variance: 101 days (end_variance_days = 101)  
+   - Start status: null (start_status = null).  
+   - Target start: 2026‑03‑01, actual start: 2026‑03‑01 (on time).  
+   - Target end: 2026‑05‑31, actual end: not recorded (actual_end = null).  
+   - Progress: 100 % (progress_percent = 100) but not completed (completed = false) – a data‑quality contradiction (dq_progress_complete_without_actual_end).  
+   - Crew: code CSG0402 (crew_type_id = null, crew_id = null).  
+   - Productivity: not available (productivity_status = PRODUCTIVITY_NOT_AVAILABLE).  
+   - Data‑quality issue: has_data_quality_issue = 1.0.
+
+3. **Flowline Boxup & Hydrotest** (activity_id = FLME1380, task_id = 53600)  
+   - End status: COMPLETED_LATE (end_status = COMPLETED_LATE)  
+   - End variance: 6 days (end_variance_days = 6)  
+   - Start status: null (start_status = null).  
+   - Target start: 2025‑12‑25, actual start: 2025‑12‑31 (gap = 6 days).  
+   - Target end: 2025‑12‑25, actual end: 2025‑12‑31 (completed late).  
+   - Progress: 100 % (progress_percent = 100) and completed (completed = true).  
+   - Crew: code MHT0503 (crew_type_id = null, crew_id = null).  
+   - Productivity: not available (productivity_status = PRODUCTIVITY_NOT_AVAILABLE).  
+   - Data‑quality issue: has_data_quality_issue = 1.0.
+
+**Ownership of delays**
+
+All three delayed activities belong to the Flowline project (project_type = Flowline). According to the business rules, a late Flowline Construction activity can cause a well/rig delay but is **not a due well for Al Tasnim** because the originating issue is from PDO. Therefore, the delays in these Flowline activities are not counted as penalties for Al Tasnim.
+
+**Data‑quality observations**
+
+- The well‑level data quality flag is true (data_quality.has_issue = true).  
+- Each delayed activity has has_data_quality_issue = 1.0, indicating that the schedule evidence for these tasks may be unreliable.  
+- The On Plot Foundation task shows a contradiction: progress_percent = 100 but completed = false and actual_end = null (dq_progress_complete_without_actual_end).  
+- No equipment identifiers are present in the evidence, so equipment data is unavailable.
+
+**Concrete next actions**
+
+1. **Investigate the hook‑up deadline**: The hook‑up deadline of 2026‑05‑19 has passed with no eng_completion_date, so the well is not yet completed. Escalate this overdue hook‑up to the Al Tasnim project manager and confirm the planned completion date.  
+2. **Review the delayed Flowline tasks**: The LV / HV Cable Trench task is the most delayed (223 days). Verify whether the crew assignment (CCL0803) and the lack of productivity data are contributing factors, and consider reallocating resources or adjusting the schedule.  
+3. **Validate data quality**: Because all delayed tasks have data‑quality issues, perform a data‑quality audit to confirm the actual start and end dates, and correct any inconsistencies before further planning decisions are made.
