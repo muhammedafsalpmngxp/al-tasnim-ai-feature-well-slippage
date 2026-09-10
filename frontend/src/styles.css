@@ -283,6 +283,16 @@ h3 {
   border-top: 4px solid var(--amber);
 }
 
+.detail-track {
+  border-color: #cfe3d7;
+  border-top: 4px solid var(--green);
+}
+
+.detail-completed {
+  border-color: var(--border);
+  border-top: 4px solid var(--muted);
+}
+
 .detail-head {
   display: flex;
   align-items: baseline;
@@ -313,6 +323,11 @@ h3 {
 .accountability-completed {
   background: #eef0f3;
   color: var(--muted);
+}
+
+.accountability-track {
+  background: #e8f5ee;
+  color: var(--green);
 }
 
 .btn-download {

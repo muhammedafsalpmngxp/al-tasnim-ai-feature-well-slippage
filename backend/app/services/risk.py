@@ -50,10 +50,6 @@ WEIGHT_ACTIVITY = 0.20
 ACTIVITY_DELAY_HALF_LIFE_DAYS = 30
 ACTIVITY_COUNT_FOR_FULL_SEVERITY = 5
 
-# Risk before a deadline is reached is capped well below the overdue
-# band, so "due" and "not yet due" never look alike.
-ANTICIPATORY_MAX_SCORE = 40
-
 TOP_WBS_BRANCHES = 5
 
 # Score bands. Defined here rather than in the dashboard so the
@@ -264,12 +260,11 @@ def score_well(well_row, delayed_activities):
             )
         }
 
-    breadth = _breadth_factor(well_row)
-    activity = _activity_factor(delayed_activities)
-
     # ---------- past the deadline ----------
     if delay_days > 0:
 
+        breadth = _breadth_factor(well_row)
+        activity = _activity_factor(delayed_activities)
         lateness = _saturating(delay_days, LATENESS_HALF_LIFE_DAYS)
 
         return {
@@ -283,21 +278,21 @@ def score_well(well_row, delayed_activities):
 
     # ---------- deadline not reached (SQL reports 0 days late) ----------
     #
-    # There is no lateness to score, so the anticipatory figure rests on
-    # gate breadth and activity severity alone, capped well below the
-    # overdue band.
-    anticipatory = _blend(0.0, breadth, activity) / 100
-
+    # On track: this well has not missed its own scenario gate, so there
+    # is no lateness to score. A number here — even a low one — would
+    # read as risk that does not exist yet, so no risk_score is shown at
+    # all rather than an anticipatory figure, matching how a COMPLETED or
+    # DRILLING_IN_PROGRESS well shows no score above.
     return {
         "scenario": scenario,
         "deadline_status": "NON_DUE",
-        "risk_score": round(ANTICIPATORY_MAX_SCORE * anticipatory),
+        "risk_score": None,
         "expected_delay_days": delay_days,
         "expected_delay_gate": source["gate"],
         "note": (
-            None
-            if gate_status not in ("DATA_QUALITY_ISSUE",)
-            else "The evidence layer flagged this gate as a data-quality issue."
+            "The evidence layer flagged this gate as a data-quality issue."
+            if gate_status == "DATA_QUALITY_ISSUE"
+            else None
         )
     }
 

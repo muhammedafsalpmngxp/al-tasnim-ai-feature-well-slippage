@@ -168,13 +168,28 @@ export default function WellDetail({
   // wording ("owns this delay") would misread on a finished well.
   const completed = risk.scenario === 'COMPLETED'
 
+  // risk.due_status (from kpi_miss_reason) defaults to DUE whenever no
+  // reason is recorded — which is the common case for a well that has
+  // not slipped at all. It is therefore only meaningful once the well
+  // has actually missed its own scenario gate. risk.deadline_status is
+  // the evidence layer's own verdict on that: DUE means this well IS
+  // overdue right now; anything else (NON_DUE, or null for a completed
+  // / still-drilling well) means there is no delay to attribute yet.
+  const onTrack = !completed && risk.deadline_status !== 'DUE'
+
   // Band comes from the backend so the threshold is not duplicated here.
   const band = (risk.risk_band || 'none').toLowerCase()
 
-  // The whole panel is themed by who owns the delay: red for
-  // Tasnim-side risk, amber for bonus-potential/non-due — not just
-  // the small badge, so the distinction reads at a glance.
-  const accountabilityTheme = risk.due_status === 'DUE' ? 'due' : 'non-due'
+  // The whole panel is themed by state: red for Tasnim-side risk, amber
+  // for bonus-potential/non-due, green for on track, neutral grey for
+  // completed — not just the small badge, so the distinction reads at
+  // a glance.
+  const accountabilityTheme = completed
+    ? 'completed'
+    : onTrack
+      ? 'track'
+      : risk.due_status === 'DUE' ? 'due' : 'non-due'
+
   const delays = detail.milestone_delays || {}
 
   // The well-level delay belongs to one specific gate. The slipped-well
@@ -206,20 +221,18 @@ export default function WellDetail({
         </button>
       </div>
 
-      <div
-        className={`accountability-banner accountability-${
-          completed ? 'completed' : accountabilityTheme
-        }`}
-      >
+      <div className={`accountability-banner accountability-${accountabilityTheme}`}>
         {completed
           ? `Completed — hook-up recorded ${
               well.eng_completion_date
                 ? `on ${formatDate(well.eng_completion_date)}`
                 : '(date not recorded)'
             }`
-          : risk.due_status === 'DUE'
-            ? 'Accountability: DUE — Tasnim owns this delay'
-            : 'Accountability: NON-DUE — outside Tasnim scope (bonus potential)'}
+          : onTrack
+            ? 'On track — this well has not missed a milestone deadline'
+            : risk.due_status === 'DUE'
+              ? 'Accountability: DUE — Tasnim owns this delay'
+              : 'Accountability: NON-DUE — outside Tasnim scope (bonus potential)'}
       </div>
 
       <div className="risk-row">
@@ -260,11 +273,17 @@ export default function WellDetail({
 
           <div>
             <span className="fact-label">Accountability</span>
-            <span
-              className={`badge badge-${risk.due_status === 'DUE' ? 'bad' : 'warn'}`}
-            >
-              {risk.due_status === 'DUE' ? 'DUE' : 'NON-DUE'}
-            </span>
+            {completed ? (
+              <span className="badge badge-neutral">COMPLETED</span>
+            ) : onTrack ? (
+              <span className="badge badge-good">ON TRACK</span>
+            ) : (
+              <span
+                className={`badge badge-${risk.due_status === 'DUE' ? 'bad' : 'warn'}`}
+              >
+                {risk.due_status === 'DUE' ? 'DUE' : 'NON-DUE'}
+              </span>
+            )}
           </div>
 
           <div>
@@ -276,16 +295,20 @@ export default function WellDetail({
         </div>
       </div>
 
-      {(risk.kpi_miss_reason || well.remarks) && (
+      {/* Accountability only means something once this well has actually
+          missed its own gate — showing it for a completed or on-track
+          well would repeat the same misleading "DUE" the banner above
+          no longer shows. */}
+      {(((!completed && !onTrack && risk.kpi_miss_reason)) || well.remarks) && (
         <div className="note">
-          {risk.due_status !== 'DUE' && risk.kpi_miss_reason && (
+          {!completed && !onTrack && risk.due_status !== 'DUE' && risk.kpi_miss_reason && (
             <p>
               <strong>Classified NON-DUE</strong> under the current
               accountability rules, with recorded reason{' '}
               <strong>{risk.kpi_miss_reason}</strong> (bonus potential).
             </p>
           )}
-          {risk.due_status === 'DUE' && risk.kpi_miss_reason && (
+          {!completed && !onTrack && risk.due_status === 'DUE' && risk.kpi_miss_reason && (
             <p>
               <strong>Classified DUE</strong> under the current
               accountability rules, with recorded reason{' '}
@@ -468,8 +491,10 @@ export default function WellDetail({
         </div>
       </div>
 
-      {/* DQ flags stay visible: they qualify every figure above. */}
-      {dqFlags.length > 0 && (
+      {/* DQ flags qualify the figures above, but an on-track well has no
+          risk figures being qualified — showing them here would read as
+          a problem where none is being reported. */}
+      {!onTrack && dqFlags.length > 0 && (
         <div className="dq-flags">
           <span className="dq-flags-label">
             Flags raised by the evidence layer ({dqFlags.length})
@@ -512,7 +537,12 @@ export default function WellDetail({
         <p className="muted">No lagging branches flagged for this well.</p>
       )}
 
-      <h3>Delayed activities ({activities.length})</h3>
+      {/* An on-track well has not missed its own deadline, so its task
+          rows are shown as plain activities rather than framed as
+          "delayed" — the underlying data is the same either way. */}
+      <h3>
+        {onTrack ? 'Activities' : 'Delayed activities'} ({activities.length})
+      </h3>
       {activities.length ? (
         <div className="table-scroll">
           <table className="table">
@@ -531,6 +561,7 @@ export default function WellDetail({
                     const missing = isMissing(value)
 
                     const isLate =
+                      !onTrack &&
                       column.key === 'delay_days' &&
                       typeof value === 'number' &&
                       value > 0
@@ -576,7 +607,11 @@ export default function WellDetail({
           </table>
         </div>
       ) : (
-        <p className="muted">No delayed activities flagged for this well.</p>
+        <p className="muted">
+          {onTrack
+            ? 'No activities recorded for this well.'
+            : 'No delayed activities flagged for this well.'}
+        </p>
       )}
     </section>
   )
