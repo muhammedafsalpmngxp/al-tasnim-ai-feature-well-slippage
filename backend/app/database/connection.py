@@ -1,4 +1,6 @@
 import os
+import struct
+from datetime import datetime, timedelta, timezone
 
 import pyodbc
 
@@ -6,6 +8,30 @@ from dotenv import load_dotenv
 
 
 load_dotenv()
+
+
+# SQL_SS_TIMESTAMPOFFSET — pyodbc has no built-in handler, so reading a
+# `datetimeoffset` column raises "ODBC SQL type -155 is not yet supported".
+# The full evidence projection selects such columns (task_daily.time_stamp),
+# so decode the 20-byte struct the driver hands back.
+SQL_SS_TIMESTAMPOFFSET = -155
+
+
+def _decode_datetimeoffset(value):
+
+    if value is None:
+        return None
+
+    (
+        year, month, day, hour, minute, second,
+        nanoseconds, offset_hours, offset_minutes
+    ) = struct.unpack("<6hI2h", value)
+
+    return datetime(
+        year, month, day, hour, minute, second,
+        nanoseconds // 1000,
+        timezone(timedelta(hours=offset_hours, minutes=offset_minutes))
+    )
 
 
 def get_connection():
@@ -51,6 +77,13 @@ def get_connection():
         f"Connection Timeout={timeout};"
     )
 
-    return pyodbc.connect(
+    connection = pyodbc.connect(
         connection_string
     )
+
+    connection.add_output_converter(
+        SQL_SS_TIMESTAMPOFFSET,
+        _decode_datetimeoffset
+    )
+
+    return connection

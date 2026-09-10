@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react'
 
-function optionLabel(well) {
-  const days = Math.round(well.delay_days)
-  const late = days === 1 ? '1 day late' : `${days} days late`
-  const reasons = well.slip_reasons?.length ? ` · ${well.slip_reasons.join(', ')}` : ''
-
-  return `Well ${well.well_id} — ${late}${reasons}`
-}
+// The four states a well can be in, in the order they are grouped.
+// Both the code and its display wording come from the backend
+// (slipped_wells.WELL_CATEGORY_LABELS) — the order and the colour class
+// are the only things decided here.
+//
+// AL TASNIM / PDO are the business names for the accountability split:
+// a slipped well Al Tasnim owns, versus one attributed to PDO-side
+// causes. Completed wells are selectable like any other.
+const CATEGORY_ORDER = ['AL_TASNIM', 'PDO', 'ON_TRACK', 'COMPLETED']
 
 export default function WellSelect({ wells, selectedWellId, onSelect }) {
   const [search, setSearch] = useState('')
@@ -16,25 +18,36 @@ export default function WellSelect({ wells, selectedWellId, onSelect }) {
 
     if (!query) return wells
 
-    return wells.filter((well) => {
-      const haystack = [
-        String(well.well_id),
-        ...(well.slip_reasons || []),
-        well.kpi_miss_reason || ''
-      ]
-        .join(' ')
-        .toLowerCase()
-
-      return haystack.includes(query)
-    })
+    return wells.filter((well) =>
+      String(well.well_id).toLowerCase().includes(query)
+    )
   }, [wells, search])
 
-  if (!wells.length) {
-    return <p className="muted">No slipped wells found.</p>
-  }
+  // The list itself stays in one ascending run of well IDs — the colour
+  // carries the category, so grouping would only break the ordering the
+  // list is there to provide. The legend below counts each category.
+  const counts = useMemo(() => {
+    const tally = new Map()
 
-  const due = matches.filter((well) => well.due_status === 'DUE')
-  const nonDue = matches.filter((well) => well.due_status !== 'DUE')
+    for (const well of matches) {
+      const entry = tally.get(well.category)
+
+      if (entry) {
+        entry.count += 1
+      } else {
+        tally.set(well.category, {
+          count: 1,
+          label: well.category_label
+        })
+      }
+    }
+
+    return tally
+  }, [matches])
+
+  if (!wells.length) {
+    return <p className="muted">No wells found.</p>
+  }
 
   return (
     <div className="well-picker">
@@ -66,26 +79,31 @@ export default function WellSelect({ wells, selectedWellId, onSelect }) {
             : `— ${matches.length} of ${wells.length} wells match —`}
         </option>
 
-        {due.length > 0 && (
-          <optgroup label={`Due — Tasnim scope (${due.length})`}>
-            {due.map((well) => (
-              <option key={well.well_id} value={well.well_id}>
-                {optionLabel(well)}
-              </option>
-            ))}
-          </optgroup>
-        )}
-
-        {nonDue.length > 0 && (
-          <optgroup label={`Non-due — bonus potential (${nonDue.length})`}>
-            {nonDue.map((well) => (
-              <option key={well.well_id} value={well.well_id}>
-                {`${optionLabel(well)} · ${well.kpi_miss_reason || 'no reason recorded'}`}
-              </option>
-            ))}
-          </optgroup>
-        )}
+        {matches.map((well) => (
+          <option
+            key={well.well_id}
+            value={well.well_id}
+            className={`well-option well-option-${well.category.toLowerCase()}`}
+          >
+            {well.well_id}
+          </option>
+        ))}
       </select>
+
+      {/* The colour carries the state, so it needs a written key too. */}
+      <ul className="well-legend">
+        {CATEGORY_ORDER.map((code) => {
+          const entry = counts.get(code)
+
+          if (!entry) return null
+
+          return (
+            <li key={code} className={`well-legend-${code.toLowerCase()}`}>
+              {entry.label} ({entry.count})
+            </li>
+          )
+        })}
+      </ul>
 
       {search.trim() && matches.length === 0 && (
         <p className="muted">No well matches “{search.trim()}”.</p>

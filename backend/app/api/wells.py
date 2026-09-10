@@ -11,7 +11,8 @@ from app.database.connection import (
 )
 
 from app.services.slipped_wells import (
-    get_slipped_wells
+    get_slipped_wells,
+    get_well_list
 )
 
 from app.services.summary import (
@@ -89,6 +90,52 @@ def wells_summary():
         raise HTTPException(
             status_code=500,
             detail="Unable to load well summary. Check the server logs."
+        )
+
+    finally:
+
+        if connection:
+
+            connection.close()
+
+
+# ============================================================
+# GET ALL WELLS (PICKER)
+# ============================================================
+#
+# Every well on record with its category, ascending by well_id. The
+# picker shows the id alone, so nothing else is returned.
+
+@router.get("/wells/list")
+def wells_list():
+
+    connection = None
+
+    try:
+
+        connection = get_connection()
+
+        wells = get_well_list(connection)
+
+        return {
+            "success": True,
+            "count": len(wells),
+            "wells": wells
+        }
+
+    except ValueError as exc:
+        logger.warning("Unable to load the well list: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Database configuration is invalid or incomplete."
+        ) from exc
+
+    except Exception:
+        logger.exception("Unable to load the well list")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to load the well list. Check the server logs."
         )
 
     finally:

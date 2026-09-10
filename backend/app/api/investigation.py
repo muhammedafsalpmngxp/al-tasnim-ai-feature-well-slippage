@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from app.database.connection import get_connection
 
 from app.services.investigation import (
-    get_well_risk_assessment,
+    get_evidence_bundle,
     update_investigation_json,
     WellNotFoundError
 )
@@ -65,21 +65,22 @@ def investigate_well(
 
 
         # ----------------------------------------------------
-        # BUILD RISK ASSESSMENT
+        # AUTHORITATIVE EVIDENCE -> UI JSON + AI EVIDENCE
         # ----------------------------------------------------
 
-        summary = get_well_risk_assessment(
+        bundle = get_evidence_bundle(
             connection,
             well_id
         )
 
 
         # ----------------------------------------------------
-        # UPDATE JSON
+        # PERSIST (UI payload + raw and compact evidence, for
+        # later auditing without re-querying the database)
         # ----------------------------------------------------
 
         update_investigation_json(
-            summary
+            bundle
         )
 
 
@@ -87,10 +88,10 @@ def investigate_well(
 
 
         # ----------------------------------------------------
-        # API RESPONSE
+        # API RESPONSE — the dashboard payload
         # ----------------------------------------------------
 
-        return summary
+        return bundle["ui"]
 
 
     except WellNotFoundError as exc:

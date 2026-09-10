@@ -1,148 +1,112 @@
-import math
-from datetime import date, timedelta
+"""
+Risk scoring and scenario classification.
 
-import pandas as pd
+WHAT THIS MODULE MAY DO
+    Combine deterministic facts the authoritative SQL already produced
+    into the 0-100 composite score and the scenario label.
 
-from app.services.attribution import classify_due_status
-from app.services.investigation import clean_value
+WHAT IT MUST NOT DO
+    Calculate a date, a day difference, a milestone status, a delay or an
+    attribution. Those come out of backend/sql/well_evidence.sql. There is
+    no date arithmetic anywhere in this file — the lateness input is read
+    straight from the SQL's own delay column for the relevant gate.
+
+WHY THE SCORE LIVES HERE AND NOT IN SQL
+    The authoritative SQL produces ai_schedule_classification,
+    schedule_evidence_level and data_evidence_level, but it has no 0-100
+    composite score. The dashboard needs one, so it is assembled here
+    from SQL-supplied inputs. This is the only deliberate Python-side
+    calculation in the evidence path, and it is documented as such.
+"""
+
+from app.services.milestones import (
+    MILESTONE_STATUS_COLUMNS,
+    SLIPPED_MILESTONE_STATUSES
+)
+from app.services.serialization import to_number
 
 
 # ============================================================
-# TUNABLE CONSTANTS (v1 heuristic — not a trained model)
+# TUNABLE CONSTANTS (deterministic heuristic — not a trained model)
 # ============================================================
 #
-# These thresholds encode the rules described by the business:
-#   - Before Drilling: construction must finish 1 day before
-#     RIG_ON. Risk ramps up over a 60-day window (matching the
-#     existing pegging-deadline window already used elsewhere
-#     in this project) and spikes once the deadline is missed.
-#   - After Drilling: a well is "due" once
-#     today > rig_off_date + 2 days (Hoist On/Off and Wellpad
-#     Handover dates are not yet available in the schema, so
-#     they are intentionally omitted from this calculation).
+# The score blends three normalised components so no single input can
+# pin it at 100:
 #
-# Tune these once real outcomes are available to validate against.
+#   lateness  how far past the scenario's deadline   (saturating curve)
+#   breadth   how many milestone gates have slipped  (0..1)
+#   activity  delayed-activity count/severity        (0..1, may be unknown)
+#
+# Lateness uses days / (days + HALF_LIFE) rather than a linear ramp: a
+# linear ramp hit its ceiling around 20 days overdue, which put 31% of
+# wells at exactly 100 and could not tell a 30-day slip from a 300-day one.
 
-BEFORE_DRILLING_WINDOW_DAYS = 60
-BEFORE_DRILLING_OVERDUE_BASE_SCORE = 60
-BEFORE_DRILLING_OVERDUE_SCORE_PER_DAY = 2
-BEFORE_DRILLING_MIN_PROBLEM_SEVERITY = 0.2
-BEFORE_DRILLING_PROBLEM_TASKS_FOR_FULL_SEVERITY = 3
+LATENESS_HALF_LIFE_DAYS = 90
 
-AFTER_DRILLING_HOOKUP_GRACE_DAYS = 2
-AFTER_DRILLING_OVERDUE_BASE_SCORE = 50
-AFTER_DRILLING_OVERDUE_SCORE_PER_DAY = 3
-AFTER_DRILLING_LOOKAHEAD_DAYS = 14
-AFTER_DRILLING_ANTICIPATORY_MAX_SCORE = 30
+WEIGHT_LATENESS = 0.55
+WEIGHT_BREADTH = 0.25
+WEIGHT_ACTIVITY = 0.20
 
-CONSTRUCTION_PROJECT_TYPES = {"FLOWLINE", "LOCATION"}
+ACTIVITY_DELAY_HALF_LIFE_DAYS = 30
+ACTIVITY_COUNT_FOR_FULL_SEVERITY = 5
+
+# Risk before a deadline is reached is capped well below the overdue
+# band, so "due" and "not yet due" never look alike.
+ANTICIPATORY_MAX_SCORE = 40
 
 TOP_WBS_BRANCHES = 5
 
-MILESTONE_FIELDS = (
-    "pegging_status",
-    "flaf_status",
-    "construction_status",
-    "hookup_status"
+# Score bands. Defined here rather than in the dashboard so the
+# classification has one home and the frontend only renders it.
+RISK_BAND_THRESHOLDS = (
+    ("HIGH", 70),
+    ("MEDIUM", 40),
+    ("LOW", 0)
 )
 
-# Per-activity fields exposed in delayed_activities, in output order.
-ACTIVITY_FIELDS = (
-    "task_id",
-    "project_type",
-    "activity_id",
-    "activity_code",
-    "activity",
-    "crew",
-    "progress_percent",
-    "completed",
-    "target_start",
-    "target_end",
-    "actual_start",
-    "actual_end",
-    "remaining_duration",
-    "end_status",
-    "delay_days",
-    "execution_status",
-    "schedule_risk",
-    "target_achievability",
-    "productivity_status",
-    "resource_status"
-)
 
-ACTIVITY_BOOL_FIELDS = {"completed"}
-
-ACTIVITY_NUMBER_FIELDS = {
-    "task_id",
-    "progress_percent",
-    "remaining_duration",
-    "delay_days"
+# Which SQL delay column measures the well's own lateness in each
+# scenario. Before drilling, the gate is construction (rig-on must happen
+# by ex_rig_on_date - 1). After drilling, it is hook-up (due at
+# rig_off_date + 2). Both numbers are computed by the SQL.
+# Scenarios with no scoring gate. Both are legitimate states rather than
+# failures, so each says why no score is shown instead of leaving a blank.
+UNSCORED_SCENARIO_NOTES = {
+    "DRILLING_IN_PROGRESS": (
+        "Drilling in progress — outside current risk-scoring scope."
+    ),
+    "COMPLETED": (
+        "Hook-up complete — this well is finished, so it is outside "
+        "slippage scoring. The evidence below is its final record."
+    )
 }
 
-EVIDENCE_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+
+SCENARIO_DELAY_SOURCE = {
+    "BEFORE_DRILLING": {
+        "delay_column": "construction_lag_days",
+        "status_column": "construction_status",
+        "gate": "construction"
+    },
+    "AFTER_DRILLING": {
+        "delay_column": "hookup_delay_days",
+        "status_column": "hookup_status",
+        "gate": "hookup"
+    }
+}
 
 
 # ============================================================
-# VALUE HELPERS
-# ============================================================
-
-def _number(value):
-
-    """
-    Keep whole numbers whole: a pandas column containing NULLs is
-    float-typed, which would otherwise render delay_days as 32.0.
-    """
-
-    if value is None or isinstance(value, bool):
-        return value
-
-    if isinstance(value, int):
-        return value
-
-    if isinstance(value, float):
-
-        if math.isnan(value) or math.isinf(value):
-            return None
-
-        return int(value) if value.is_integer() else round(value, 2)
-
-    return value
-
-
-def _normalize_text(series):
-
-    # Activity descriptions in the source data contain embedded
-    # newlines — collapse whitespace so labels group and display
-    # consistently.
-    return (
-        series
-        .str.replace(r"\s+", " ", regex=True)
-        .str.strip()
-    )
-
-
-def _strongest_evidence(task_df, column):
-
-    if column not in task_df.columns:
-        return None
-
-    levels = [
-        value
-        for value in task_df[column].dropna().unique()
-        if value in EVIDENCE_RANK
-    ]
-
-    if not levels:
-        return None
-
-    return max(levels, key=lambda level: EVIDENCE_RANK[level])
-
-
-# ============================================================
-# SCENARIO CLASSIFICATION
+# SCENARIO
 # ============================================================
 
 def classify_scenario(well_row):
+
+    """
+    Before / during / after drilling, from the three master dates the SQL
+    returns. The authoritative SQL has no scenario column, so the label is
+    derived here — by reading dates, never by comparing them to today.
+    """
 
     if well_row.get("eng_completion_date"):
         return "COMPLETED"
@@ -157,129 +121,184 @@ def classify_scenario(well_row):
 
 
 # ============================================================
-# BEFORE-DRILLING RISK
+# SCORE COMPONENTS
 # ============================================================
 
-def score_before_drilling(well_row, task_df, today):
+def _saturating(value, half_life):
 
-    ex_rig_on_date = well_row.get("ex_rig_on_date")
+    """
+    Map 0..inf onto 0..1 without ever reaching 1, so the score keeps
+    discriminating no matter how large the input gets. Reaches 0.5 at
+    `half_life`.
+    """
 
-    if not ex_rig_on_date:
+    if not value or value <= 0:
+        return 0.0
+
+    return value / (value + half_life)
+
+
+def _breadth_factor(well_row):
+
+    """How many of the gate statuses the SQL reported have slipped."""
+
+    slipped = sum(
+        1
+        for column in MILESTONE_STATUS_COLUMNS
+        if well_row.get(column) in SLIPPED_MILESTONE_STATUSES
+    )
+
+    return slipped / len(MILESTONE_STATUS_COLUMNS)
+
+
+def _activity_factor(delayed_activities):
+
+    """
+    Severity of the well's delayed activities, or None when there are no
+    activity rows at all — the weight is then redistributed rather than
+    scoring the well as though it had no problems.
+
+    Reads each activity's SQL-computed end_variance_days.
+    """
+
+    if not delayed_activities:
+        return None
+
+    count_factor = min(
+        1.0,
+        len(delayed_activities) / ACTIVITY_COUNT_FOR_FULL_SEVERITY
+    )
+
+    delays = [
+        to_number(activity.get("end_variance_days")) or 0
+        for activity in delayed_activities
+    ]
+
+    worst_delay = max(delays) if delays else 0
+
+    delay_factor = _saturating(worst_delay, ACTIVITY_DELAY_HALF_LIFE_DAYS)
+
+    return (count_factor + delay_factor) / 2
+
+
+def risk_band(risk_score):
+
+    """
+    Band a score for display. Returns None when there is no score, so the
+    dashboard shows "no score" rather than implying low risk.
+    """
+
+    if risk_score is None:
+        return None
+
+    for band, threshold in RISK_BAND_THRESHOLDS:
+        if risk_score >= threshold:
+            return band
+
+    return "LOW"
+
+
+def _blend(lateness, breadth, activity):
+
+    components = [
+        (WEIGHT_LATENESS, lateness),
+        (WEIGHT_BREADTH, breadth)
+    ]
+
+    if activity is not None:
+        components.append((WEIGHT_ACTIVITY, activity))
+
+    total_weight = sum(weight for weight, _ in components)
+
+    weighted = sum(weight * value for weight, value in components)
+
+    return round(100 * weighted / total_weight)
+
+
+# ============================================================
+# SCORING
+# ============================================================
+
+def score_well(well_row, delayed_activities):
+
+    """
+    Build the composite risk figure.
+
+    `expected_delay_days` is NOT calculated here — it is the SQL's delay
+    column for the scenario's own gate, so the number the dashboard shows
+    is the same number the SQL computed.
+    """
+
+    scenario = classify_scenario(well_row)
+
+    source = SCENARIO_DELAY_SOURCE.get(scenario)
+
+    if source is None:
 
         return {
-            "due_status": None,
+            "scenario": scenario,
+            "deadline_status": None,
             "risk_score": None,
             "expected_delay_days": None,
+            "expected_delay_gate": None,
+            "note": UNSCORED_SCENARIO_NOTES.get(scenario)
+        }
+
+    delay_days = to_number(well_row.get(source["delay_column"]))
+    gate_status = well_row.get(source["status_column"])
+
+    # A NULL delay means the SQL could not evaluate the gate, because the
+    # baseline date it needs is missing. That is a data-quality signal,
+    # not a zero.
+    if delay_days is None:
+
+        return {
+            "scenario": scenario,
+            "deadline_status": None,
+            "risk_score": None,
+            "expected_delay_days": None,
+            "expected_delay_gate": source["gate"],
             "note": (
-                "Missing ex_rig_on_date — construction deadline "
-                "cannot be evaluated (data quality issue)."
+                "Baseline date missing — this well's deadline could not be "
+                "evaluated by the evidence layer (data quality issue)."
             )
         }
 
-    construction_deadline = ex_rig_on_date - timedelta(days=1)
-    days_to_deadline = (construction_deadline - today).days
+    breadth = _breadth_factor(well_row)
+    activity = _activity_factor(delayed_activities)
 
-    if "project_type" in task_df.columns:
-        construction_tasks = task_df[
-            task_df["project_type"]
-            .fillna("")
-            .str.upper()
-            .isin(CONSTRUCTION_PROJECT_TYPES)
-        ]
-    else:
-        construction_tasks = task_df
+    # ---------- past the deadline ----------
+    if delay_days > 0:
 
-    if days_to_deadline < 0:
-
-        overdue_days = -days_to_deadline
-
-        risk_score = min(
-            100,
-            BEFORE_DRILLING_OVERDUE_BASE_SCORE
-            + overdue_days * BEFORE_DRILLING_OVERDUE_SCORE_PER_DAY
-        )
+        lateness = _saturating(delay_days, LATENESS_HALF_LIFE_DAYS)
 
         return {
-            "due_status": "DUE",
-            "risk_score": risk_score,
-            "expected_delay_days": overdue_days,
+            "scenario": scenario,
+            "deadline_status": "DUE",
+            "risk_score": _blend(lateness, breadth, activity),
+            "expected_delay_days": delay_days,
+            "expected_delay_gate": source["gate"],
             "note": None
         }
 
-    urgency = 1 - min(days_to_deadline / BEFORE_DRILLING_WINDOW_DAYS, 1)
-
-    problem_severity = min(
-        1.0,
-        len(construction_tasks)
-        / BEFORE_DRILLING_PROBLEM_TASKS_FOR_FULL_SEVERITY
-    )
-
-    severity = max(problem_severity, BEFORE_DRILLING_MIN_PROBLEM_SEVERITY * urgency)
-
-    risk_score = round(100 * urgency * severity)
-
-    max_remaining = 0
-
-    if not construction_tasks.empty and "remaining_duration" in construction_tasks.columns:
-
-        remaining_values = pd.to_numeric(
-            construction_tasks["remaining_duration"],
-            errors="coerce"
-        ).dropna()
-
-        if not remaining_values.empty:
-            max_remaining = max(0, int(remaining_values.max()))
-
-    expected_delay_days = max(0, max_remaining - days_to_deadline)
+    # ---------- deadline not reached (SQL reports 0 days late) ----------
+    #
+    # There is no lateness to score, so the anticipatory figure rests on
+    # gate breadth and activity severity alone, capped well below the
+    # overdue band.
+    anticipatory = _blend(0.0, breadth, activity) / 100
 
     return {
-        "due_status": "NON_DUE",
-        "risk_score": risk_score,
-        "expected_delay_days": expected_delay_days,
-        "note": None
-    }
-
-
-# ============================================================
-# AFTER-DRILLING RISK
-# ============================================================
-
-def score_after_drilling(well_row, task_df, today):
-
-    rig_off_date = well_row.get("rig_off_date")
-
-    due_date = rig_off_date + timedelta(days=AFTER_DRILLING_HOOKUP_GRACE_DAYS)
-    days_overdue = (today - due_date).days
-
-    if days_overdue > 0:
-
-        risk_score = min(
-            100,
-            AFTER_DRILLING_OVERDUE_BASE_SCORE
-            + days_overdue * AFTER_DRILLING_OVERDUE_SCORE_PER_DAY
+        "scenario": scenario,
+        "deadline_status": "NON_DUE",
+        "risk_score": round(ANTICIPATORY_MAX_SCORE * anticipatory),
+        "expected_delay_days": delay_days,
+        "expected_delay_gate": source["gate"],
+        "note": (
+            None
+            if gate_status not in ("DATA_QUALITY_ISSUE",)
+            else "The evidence layer flagged this gate as a data-quality issue."
         )
-
-        return {
-            "due_status": "DUE",
-            "risk_score": risk_score,
-            "expected_delay_days": days_overdue,
-            "note": None
-        }
-
-    days_remaining = -days_overdue
-
-    proximity = max(
-        0,
-        1 - (days_remaining / AFTER_DRILLING_LOOKAHEAD_DAYS)
-    )
-
-    risk_score = round(AFTER_DRILLING_ANTICIPATORY_MAX_SCORE * proximity)
-
-    return {
-        "due_status": "NON_DUE",
-        "risk_score": risk_score,
-        "expected_delay_days": 0,
-        "note": None
     }
 
 
@@ -287,215 +306,46 @@ def score_after_drilling(well_row, task_df, today):
 # LAGGING WBS BRANCHES
 # ============================================================
 
-def lagging_wbs_branches(task_df, top_n=TOP_WBS_BRANCHES):
+def lagging_wbs_branches(delayed_activities, top_n=TOP_WBS_BRANCHES):
 
-    if task_df.empty:
+    """
+    Group the delayed activities by their WBS/activity branch name.
+
+    Pure aggregation over SQL-supplied fields: the branch label and each
+    delay come from the evidence layer, this only counts and ranks them.
+    """
+
+    if not delayed_activities:
         return []
 
-    df = task_df.copy()
+    branches = {}
 
-    df["branch"] = _normalize_text(
-        df.get("activity")
-        .fillna(df.get("activity_code"))
-        .fillna("UNSPECIFIED")
-        .astype(str)
+    for activity in delayed_activities:
+
+        # business_rules.md §3: the WBS is ONLY
+        # activity_master_csv.activity_group_description. It is not
+        # wbs.activity_master.Activity, and it is not the activity code —
+        # substituting either would report a non-WBS as a WBS. A task
+        # whose mapping is absent is a real row of the breakdown, so it
+        # is kept and labelled as unmapped rather than dropped.
+        label = activity.get("activity_group_description")
+
+        label = " ".join(str(label).split()) if label else "(unmapped)"
+
+        delay = to_number(activity.get("end_variance_days")) or 0
+
+        entry = branches.setdefault(
+            label,
+            {"branch": label, "delayed_task_count": 0, "max_delay_days": 0}
+        )
+
+        entry["delayed_task_count"] += 1
+        entry["max_delay_days"] = max(entry["max_delay_days"], int(delay))
+
+    ranked = sorted(
+        branches.values(),
+        key=lambda entry: (entry["max_delay_days"], entry["delayed_task_count"]),
+        reverse=True
     )
 
-    df["delay_days_numeric"] = pd.to_numeric(
-        df.get("delay_days"),
-        errors="coerce"
-    ).fillna(0)
-
-    grouped = (
-        df.groupby("branch")
-        .agg(
-            delayed_task_count=("branch", "count"),
-            max_delay_days=("delay_days_numeric", "max")
-        )
-        .reset_index()
-        .sort_values(
-            ["max_delay_days", "delayed_task_count"],
-            ascending=False
-        )
-        .head(top_n)
-    )
-
-    return [
-        {
-            "branch": row["branch"],
-            "delayed_task_count": int(row["delayed_task_count"]),
-            "max_delay_days": int(row["max_delay_days"])
-        }
-        for row in grouped.to_dict(orient="records")
-    ]
-
-
-# ============================================================
-# DELAYED ACTIVITIES
-# ============================================================
-
-def delayed_activities(task_df):
-
-    """
-    Every delayed / at-risk activity for the well.
-
-    investigation.sql already filters to delayed and at-risk rows
-    and orders them worst-first, so that order is preserved here.
-    """
-
-    if task_df.empty:
-        return []
-
-    df = task_df.copy()
-
-    if "activity" in df.columns:
-        df["activity"] = _normalize_text(df["activity"])
-
-    available_columns = [
-        column for column in ACTIVITY_FIELDS if column in df.columns
-    ]
-
-    records = df[available_columns].to_dict(orient="records")
-
-    activities = []
-
-    for record in records:
-
-        activity = {}
-
-        # Iterate the full field list so the shape stays stable
-        # even if a column is absent from the result set.
-        for field in ACTIVITY_FIELDS:
-
-            value = clean_value(record.get(field))
-
-            if field in ACTIVITY_BOOL_FIELDS:
-                value = None if value is None else bool(value)
-
-            elif field in ACTIVITY_NUMBER_FIELDS:
-                value = _number(value)
-
-            activity[field] = value
-
-        activities.append(activity)
-
-    return activities
-
-
-# ============================================================
-# DATA QUALITY ROLL-UP
-# ============================================================
-
-def data_quality(well_row, task_df):
-
-    """
-    investigation.sql computes these per activity; roll them up to
-    the well.
-
-    has_issue is true if any activity is flagged, or if a milestone
-    could not be evaluated at all (which happens when a baseline
-    date is missing, and is itself a data-quality problem).
-
-    Evidence levels report the STRONGEST evidence available across
-    the well's activities.
-    """
-
-    milestone_issue = any(
-        well_row.get(field) == "DATA_QUALITY_ISSUE"
-        for field in MILESTONE_FIELDS
-    )
-
-    activity_issue = False
-
-    if not task_df.empty and "has_data_quality_issue" in task_df.columns:
-
-        flags = pd.to_numeric(
-            task_df["has_data_quality_issue"],
-            errors="coerce"
-        ).fillna(0)
-
-        activity_issue = bool(flags.max())
-
-    return {
-        "has_issue": bool(activity_issue or milestone_issue),
-        "schedule_evidence_level": _strongest_evidence(
-            task_df, "schedule_evidence_level"
-        ),
-        "data_evidence_level": _strongest_evidence(
-            task_df, "data_evidence_level"
-        )
-    }
-
-
-# ============================================================
-# ORCHESTRATOR
-# ============================================================
-
-def build_well_risk_summary(well_row, task_df):
-
-    today = date.today()
-
-    scenario = classify_scenario(well_row)
-
-    if scenario == "BEFORE_DRILLING":
-        risk = score_before_drilling(well_row, task_df, today)
-
-    elif scenario == "AFTER_DRILLING":
-        risk = score_after_drilling(well_row, task_df, today)
-
-    else:
-        risk = {
-            "due_status": None,
-            "risk_score": None,
-            "expected_delay_days": None,
-            "note": (
-                "Drilling in progress — outside current risk-scoring scope."
-                if scenario == "DRILLING_IN_PROGRESS"
-                else None
-            )
-        }
-
-    return {
-
-        "success": True,
-
-        "well": {
-            "well_id": well_row.get("well_id"),
-            "ex_rig_on_date": clean_value(well_row.get("ex_rig_on_date")),
-            "rig_on_date": clean_value(well_row.get("rig_on_date")),
-            "ex_rig_off_date": clean_value(well_row.get("ex_rig_off_date")),
-            "rig_off_date": clean_value(well_row.get("rig_off_date")),
-            "pegged_date": clean_value(well_row.get("pegged_date")),
-            "flaf_issue_date": clean_value(well_row.get("flaf_issue_date")),
-            "eng_completion_date": clean_value(well_row.get("eng_completion_date")),
-            "well_progress": clean_value(well_row.get("well_progress_raw")),
-            "flowline_progress": _number(
-                clean_value(well_row.get("flowline_const_progress"))
-            )
-        },
-
-        "milestones": {
-            field: well_row.get(field)
-            for field in MILESTONE_FIELDS
-        },
-
-        "risk": {
-            "scenario": scenario,
-
-            # Has this well's own deadline passed?
-            "deadline_status": risk["due_status"],
-
-            # Is the delay Tasnim's to own, or FLAF/SCR/PDO-side?
-            "due_status": classify_due_status(well_row.get("kpi_miss_reason")),
-            "kpi_miss_reason": well_row.get("kpi_miss_reason"),
-
-            "risk_score": risk["risk_score"],
-            "expected_delay_days": risk["expected_delay_days"],
-            "note": risk.get("note"),
-            "lagging_wbs_branches": lagging_wbs_branches(task_df)
-        },
-
-        "delayed_activities": delayed_activities(task_df),
-
-        "data_quality": data_quality(well_row, task_df)
-    }
+    return ranked[:top_n]

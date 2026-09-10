@@ -8,6 +8,7 @@
   --amber: #b8860b;
   --green: #217a4b;
   --blue: #1f4e79;
+  --purple: #6a3ea1;
 }
 
 * {
@@ -99,6 +100,81 @@ h3 {
   font-weight: 600;
 }
 
+/* ---------- AI insight ---------- */
+
+.insight {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--blue);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+}
+
+.detail .insight {
+  margin: 16px 0 0;
+}
+
+.insight-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.insight-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.insight-model {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+.insight-paragraph {
+  margin: 0;
+  line-height: 1.7;
+}
+
+/* Figures stand out from the prose around them. */
+.num-value {
+  color: var(--red);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.num-percent {
+  color: var(--blue);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.num-date {
+  color: var(--green);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Verbatim database content quoted in the summary — a recorded
+   cause, an activity/project name, remarks text — distinct from
+   the numeric figures above. */
+.term-db {
+  color: var(--purple);
+  font-weight: 600;
+  font-style: italic;
+}
+
+.insight-error {
+  margin: 0;
+  color: var(--amber);
+  font-size: 13px;
+}
+
 /* ---------- sections ---------- */
 
 .section {
@@ -132,6 +208,275 @@ h3 {
 .well-select:focus {
   outline: 2px solid var(--blue);
   outline-offset: 1px;
+}
+
+/* ---------- picker: one colour per well state ---------- */
+/* AL TASNIM = Tasnim-owned slip, PDO = slip attributed to PDO-side
+   causes, on track = live and not slipped, completed = hooked up.
+   The <option> colours are matched by the legend below the picker,
+   because option styling is ignored by some platform select widgets
+   and colour alone should not be the only signal. */
+
+.well-option-al_tasnim {
+  color: var(--red);
+}
+
+.well-option-pdo {
+  color: var(--amber);
+}
+
+.well-option-on_track {
+  color: var(--green);
+}
+
+.well-option-completed {
+  color: var(--muted);
+}
+
+.well-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.well-legend li::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.well-legend-al_tasnim {
+  color: var(--red);
+}
+
+.well-legend-pdo {
+  color: var(--amber);
+}
+
+.well-legend-on_track {
+  color: var(--green);
+}
+
+.well-legend-completed {
+  color: var(--muted);
+}
+
+/* ---------- due / non-due theme ---------- */
+/* The whole panel is tinted by who owns the delay: red border for
+   Tasnim-side (due) risk, amber for non-due bonus potential. */
+
+.detail-due {
+  border-color: #eecccb;
+  border-top: 4px solid var(--red);
+}
+
+.detail-non-due {
+  border-color: #f0e2bd;
+  border-top: 4px solid var(--amber);
+}
+
+.detail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.accountability-banner {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.accountability-due {
+  background: #fdecea;
+  color: var(--red);
+}
+
+.accountability-non-due {
+  background: #fdf5e3;
+  color: var(--amber);
+}
+
+.accountability-completed {
+  background: #eef0f3;
+  color: var(--muted);
+}
+
+.btn-download {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn-download:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+/* ---------- date pairs (expected / actual / days late) ---------- */
+
+.date-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.project-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-name {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.project-guid {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  word-break: break-all;
+}
+
+/* ---------- crew / supervisor / employee ---------- */
+
+.crew-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.crew-line {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.crew-sub {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.crew-employees {
+  margin: 2px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+}
+
+.crew-employees li {
+  margin-bottom: 1px;
+}
+
+.crew-emp-id {
+  color: var(--muted);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
+.date-pair-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.date-pair-sub {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 56px;
+}
+
+.chip-late {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fdecea;
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.chip-early {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #e8f5ee;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cell-late {
+  color: var(--red);
+  font-weight: 700;
+}
+
+/* A missing master mapping is evidence, not an empty cell. */
+.cell-unmapped {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ---------- data-quality flags ---------- */
+
+.dq-flags {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #f0e2bd;
+  border-left: 3px solid var(--amber);
+  border-radius: 6px;
+  background: #fffdf7;
+}
+
+.dq-flags-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  color: var(--amber);
+  margin-bottom: 8px;
+}
+
+.dq-flag-list {
+  margin: 0;
+  padding-left: 18px;
+  columns: 2;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+.dq-flag-list li {
+  margin-bottom: 2px;
+  break-inside: avoid;
+}
+
+.dq-flags-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* ---------- risk ---------- */
@@ -214,6 +559,18 @@ h3 {
   border-left: 3px solid var(--blue);
   border-radius: 4px;
   color: var(--muted);
+}
+
+.note p {
+  margin: 0 0 6px;
+}
+
+.note p:last-child {
+  margin-bottom: 0;
+}
+
+.note strong {
+  color: var(--text);
 }
 
 /* ---------- grids / tables ---------- */

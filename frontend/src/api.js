@@ -39,6 +39,19 @@ export function getSlippedWells() {
   return request('/api/slipped-wells')
 }
 
+// Every well on record — id and category only — for the picker.
+export function getWellList() {
+  return request('/api/wells/list')
+}
+
 export function getWellInvestigation(wellId) {
   return request(`/api/well/${wellId}/investigation`)
+}
+
+export function getPortfolioInsight() {
+  return request('/api/insights/portfolio')
+}
+
+export function getWellInsight(wellId) {
+  return request(`/api/insights/well/${wellId}`)
 }

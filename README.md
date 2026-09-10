@@ -19,11 +19,24 @@ one well's risk detail.
 │   ├── script.py              Standalone SQL Server schema/data inventory tool
 │   ├── database_inventory.txt Output of script.py (not committed)
 │   ├── app/
-│   │   ├── api/               Route handlers (wells, investigation)
-│   │   ├── database/          DB connection helper
-│   │   ├── services/          Query execution, data cleaning, risk scoring
-│   │   └── responses/         investigation.json output (not committed)
-│   └── sql/                    Raw SQL used by the services
+│   │   ├── api/               Route handlers (wells, investigation, insights)
+│   │   ├── database/          DB connection helper (+ datetimeoffset decoder)
+│   │   ├── services/
+│   │   │   ├── evidence.py        runs the authoritative SQL, returns raw evidence
+│   │   │   ├── milestones.py      which SQL column describes which gate
+│   │   │   ├── ui_json.py         raw evidence -> dashboard JSON
+│   │   │   ├── ai_evidence.py     raw evidence -> compact LLM evidence
+│   │   │   ├── risk.py            composite risk score (no date arithmetic)
+│   │   │   ├── attribution.py     due / non-due mapping
+│   │   │   ├── serialization.py   JSON-safety formatting helpers
+│   │   │   ├── investigation.py   pipeline orchestration + debug persistence
+│   │   │   └── llm.py             Groq narration
+│   │   └── responses/         investigation.json + evidence_raw/ai (not committed)
+│   └── sql/
+│       ├── well_evidence.sql      AUTHORITATIVE evidence layer (single source of truth)
+│       ├── slipped_wells.sql      fleet-wide slippage detection
+│       ├── well_summary.sql       headline counts
+│       └── well_project_ids.sql   all project IDs for a well
 │
 ├── run.py                     Dev runner: starts backend + frontend together
 │
@@ -109,7 +122,9 @@ Runs on `http://127.0.0.1:8000` by default. Key endpoints:
 - `GET /api/slipped-wells` — slipped wells with `delay_days`, most delayed first
 - `GET /api/well/{well_id}/investigation` — risk assessment for one well
   (scenario, due status, risk score, expected delay, lagging WBS branches,
-  top delayed tasks); also written to `backend/app/responses/investigation.json`
+  delayed activities); also written to `backend/app/responses/investigation.json`
+- `GET /api/insights/portfolio` — AI summary of the portfolio counts
+- `GET /api/insights/well/{well_id}` — AI summary of one well's assessment
 
 **Frontend (React dashboard):**
 
@@ -124,6 +139,72 @@ Opens on `http://localhost:5173`. If the backend is not running on
 The backend allows the Vite dev-server origin via CORS. If the frontend is
 served from a different origin, set `CORS_ALLOWED_ORIGINS` (comma-separated)
 in `backend/.env`.
+
+## Architecture: who is allowed to calculate what
+
+```
+DATABASE
+  └─ backend/sql/well_evidence.sql      AUTHORITATIVE DETERMINISTIC EVIDENCE
+       │                                 all milestone, delay, DQ, activity,
+       │                                 WBS, quantity, productivity and
+       │                                 classification logic lives HERE
+       ├─ raw_evidence                   untouched SQL output, 2 result sets
+       │    ├─ build_ui_json()           -> dashboard payload
+       │    └─ build_ai_evidence()       -> compact facts for the model
+       │                                    (4% the size of raw)
+       └─ LLM  ->  {"summary": "..."}    EXPLANATION ONLY
+```
+
+**SQL calculates. Python structures. The LLM explains.** These
+responsibilities are never reversed.
+
+`well_evidence.sql` carries CTEs 1–15 byte-for-byte from the approved
+source, so no business rule can drift. It returns two result sets — one
+well-level row (always present, even for a well with no tasks) and one
+row per current logical task with the full evidence projection. The
+delayed-activity filter is applied downstream so a single query serves
+both the full evidence view and the delayed view.
+
+The only deliberate Python-side calculations, both documented in place:
+
+| Value | Why not SQL |
+|---|---|
+| `risk.risk_score` | the SQL produces `ai_schedule_classification` and the two evidence levels, but no 0–100 composite |
+| `risk.due_status` | due/non-due attribution from `kpi_miss_reason` ([attribution.py](backend/app/services/attribution.py)) |
+
+Everything else the dashboard and the summary show — every date, delay,
+variance, status and flag — is read straight out of the SQL result.
+`risk.expected_delay_days` is not derived either: it is the SQL's own
+delay column for whichever gate the scenario measures
+(`construction_lag_days` before drilling, `hookup_delay_days` after), so
+the figure on screen is the figure the SQL computed.
+
+### What the model may not do
+
+The prompt forbids, explicitly: calculating dates, day differences,
+percentages or risk scores; deciding due/non-due or a milestone status;
+inventing missing values; inferring a delay that is not present as a
+`delay_days` above zero; inferring causality from remarks; inferring a
+resource shortage from the existence of resource data; treating an
+activity's delay as the well's delay; reinterpreting
+`AHEAD_OF_SCHEDULE` as overdue; or contradicting the supplied
+attribution.
+
+Accountability is handled with particular care. The model was observed
+**inverting** the enum — reading `NON_DUE` and writing "attributed to
+Tasnim's responsibility". So the AI evidence no longer asks it to
+interpret: `accountability.statement` is a ready-made sentence built in
+Python from the authoritative verdict, and the prompt instructs the
+model to reproduce its meaning rather than re-derive it.
+
+### Well delay is not activity delay
+
+These are separate measurements and the summary must keep them apart.
+The AI evidence names the gate the well-level figure belongs to
+(`risk.expected_delay_gate`) so the distinction is unambiguous:
+
+> the hook-up milestone is 366 days overdue, while the most delayed
+> activity is FLC1380 at 392 days
 
 ## Slippage criteria
 
@@ -192,24 +273,131 @@ A flagged well also carries `has_data_issue`, raised when any of these hold:
 Each selected well is classified from `rig_on_date` / `rig_off_date` /
 `eng_completion_date` and scored accordingly:
 
-| Scenario | Condition | Rule |
+| Scenario | Condition | Deadline |
 |---|---|---|
-| Before drilling | no rig-on yet | Construction must finish 1 day before the expected rig-on. Risk ramps over a 60-day window and spikes once that deadline passes. |
-| Drilling in progress | rig-on done, no rig-off | Not scored — outside the current scope. |
-| After drilling | rig-off recorded, hook-up incomplete | Due once today > rig-off + 2 days; risk grows with days overdue. |
-| Completed | eng. completion recorded | Excluded from all lists. |
+| Before drilling | no rig-on yet | `ex_rig_on_date − 1 day` — construction must finish the day before rig-on |
+| After drilling | rig-off recorded, hook-up incomplete | `rig_off_date + 2 days` |
+| Drilling in progress | rig-on done, no rig-off | Not scored — outside the current scope |
+| Completed | eng. completion recorded | Excluded from all lists |
 
-The thresholds are deterministic heuristics defined as named constants at the
-top of `backend/app/services/risk.py` — tune them once real outcomes are
-available to validate against.
+### Score composition
+
+`risk_score` is a weighted blend of three normalised components, so no single
+input can pin it at 100:
+
+| Component | Weight | Basis |
+|---|---|---|
+| Lateness | 0.55 | Days past the deadline, via `days / (days + 90)` |
+| Breadth | 0.25 | How many of the four milestones have slipped |
+| Activity | 0.20 | Delayed-activity count and worst activity delay |
+
+Lateness uses a **saturating curve rather than a linear ramp**. The original
+linear version (`60 + days × 2`) hit its ceiling at ~20 days overdue, which put
+**31% of wells at exactly 100** and left the score unable to distinguish a
+30-day slip from a 300-day one. The curve reaches 0.5 at 90 days and keeps
+rising without ever reaching 1, so ordering is preserved at any magnitude.
+Measured across the live fleet, the change took after-drilling wells from 8 to
+28 distinct score values, with none at 100.
+
+When a well has no activity rows, the activity weight is **redistributed** over
+the other two rather than scored as zero — missing evidence should not read as
+an absence of risk. Wells that have not yet reached their deadline get a
+separate anticipatory score capped at 40, so "due" and "not yet due" never look
+alike.
+
+Thresholds are named constants at the top of
+[backend/app/services/risk.py](backend/app/services/risk.py) — tune them once
+real outcomes are available to validate against.
+
+## AI summaries
+
+The dashboard narrates its own output through Groq. The model **computes
+nothing**: the already-computed JSON is handed to it and it only explains what
+is there, so the prose and the dashboard can never disagree. Every count,
+percentage and day-count — including combined figures like "due + non-due" —
+is calculated in Python and passed in; the prompt explicitly forbids the model
+from deriving, adding or otherwise computing a number itself. Output is
+deterministic (`temperature: 0`) and returned as `{"summary": "..."}` via
+Groq's JSON mode, so the shape can't drift.
+
+| Endpoint | Narrates |
+|---|---|
+| `GET /api/insights/portfolio` | Well counts and the due/non-due split, every recorded non-due cause, ranked |
+| `GET /api/insights/well/{well_id}` | The well's stage; every slipped gate with its expected date, actual date and exact days late; accountability and `kpi_miss_reason`; `remarks`; the driving activity or WBS branch; the data-quality caveat if flagged |
+
+Both are fetched separately from the figures they describe, so a slow or
+unavailable model never blocks the dashboard.
+
+### Expected vs. actual dates
+
+Every gate (rig-on, rig-off, pegging, FLAF, hook-up) carries its expected
+date, its actual date (or "not yet recorded"), and the exact number of days
+late — computed once in
+[`risk.py`](backend/app/services/risk.py) as `milestone_delays` and reused by
+both the UI's Key Dates panel and the AI prompt, so the two can never disagree
+on a day count. A gate only shows a "days late" chip when `delay_days > 0`.
+
+### Due vs. non-due theming
+
+The well-detail panel is themed by `risk.due_status`, not just badged: a red
+top border and banner for **DUE** (Tasnim-owned) wells, amber for **NON_DUE**
+(bonus potential) wells — in addition to the existing due/non-due colours on
+the summary cards and the well-select dropdown groups.
+
+### Project IDs
+
+`well_master` carries one `project_id` per well, but `task_daily` rows for the
+same well frequently reference a **different** one — separate scopes of work
+(Flowline vs. Location, for example) are tracked as separate projects against
+the same physical well. Most wells have exactly one project_id; some have two
+or more.
+[`well_project_ids.sql`](backend/sql/well_project_ids.sql) returns the union
+of every `project_id` seen for the well across both tables, resolved to
+`project_code` / `project_name` via `project.project_mstr` where a match
+exists — a `project_id` with no match still returns its own row (fields
+`null`) rather than being dropped. Shown in the well-detail panel as
+**Projects (`N`)**, right above Key Dates.
+
+### Highlighted database terms
+
+Beyond the numeric highlighting (dates green, percentages blue, other numbers
+red), the AI paragraph highlights **verbatim database content** — a recorded
+`kpi_miss_reason`, an activity name/code, a WBS branch, a project code/name,
+the `remarks` text — in purple italic, distinct from the numeric colours. The
+term list is never fixed: [`llm.py`](backend/app/services/llm.py)'s
+`well_highlight_terms()` / `portfolio_highlight_terms()` build it fresh from
+whatever the current response's JSON actually contains, and the API returns it
+as `highlight_terms` alongside `summary`. Raw status enums (`due_status`,
+`scenario`, milestone statuses) are deliberately excluded — once the model
+translates them into prose ("due", "missed"), they're ordinary English words,
+and highlighting every occurrence would colour normal sentence structure
+rather than actual database content.
+
+Configuration in `.env`:
+
+```
+api_key=<your Groq API key>
+GROQ_MODEL=openai/gpt-oss-120b
+```
+
+`GROQ_MODEL` is optional. Note that **`llama-3.3-70b-versatile` is not
+available on the current Groq account** — the key returns `model_not_found`,
+and the account exposes no Llama chat model. The default is
+`openai/gpt-oss-120b`, the largest general-purpose model it does have;
+`openai/gpt-oss-20b`, `qwen/qwen3.8-27b` and `groq/compound` are also
+available. Check with:
+
+```bash
+curl -s https://api.groq.com/openai/v1/models -H "Authorization: Bearer $api_key"
+```
 
 Not yet implemented (needs schema confirmation first):
 
-- `Hoist_On_Date` / `Hoist_Off_Date` / `Wellpad_Handover_Date` in the
-  after-drilling due-date calculation — those columns do not exist yet, so the
-  rule currently uses `rig_off_date + 2 days` only.
-- Non-due exclusion for FLAF/SCR delays and PDO issues, and the resulting
-  "bonus potential" bucket.
+- `hoist_on_date` / `hoist_off_date` / `wellpad_handover_date` in the
+  after-drilling due-date rule. The columns **do** exist but are ~1% and 0.1%
+  populated respectively, and `well.wmr_conversion` (which also carries them,
+  plus `expected_hoist_on_date`) is an empty table — so the rule uses
+  `rig_off_date + 2 days` only.
 
 **Database inventory tool (optional, backend-only):**
 

@@ -4,8 +4,19 @@
    SLIPPED WELL DETECTION
 
    PURPOSE:
-       Identify every live well that is slipping, across all
-       measurable milestones — not just rig-on / rig-off.
+       Classify EVERY well on record, across all measurable
+       milestones — not just rig-on / rig-off.
+
+       One row per well, whatever its state, carrying two verdict
+       columns so a single definition of "slipped" serves both the
+       slipped-well list and the full well picker:
+
+         is_completed  hook-up recorded (business_rules.md §8)
+         is_slipped    a LIVE well that failed a milestone test
+
+       A completed well is never is_slipped: a hooked-up well cannot
+       slip. Callers that want only the slipped wells filter on
+       is_slipped — see app/services/slipped_wells.py.
 
    NULL SAFETY:
        Source data is incomplete, so every test below is anchored
@@ -33,8 +44,13 @@
 DECLARE @Today DATE = CAST(GETDATE() AS DATE);
 
 
-WITH LiveWells AS
+WITH AllWells AS
 (
+    /* Every well on record. Completion is carried as a COLUMN
+       (eng_completion_date) and turned into a verdict in the final
+       SELECT, rather than filtering completed wells out here — the
+       dashboard's picker lists them too. */
+
     SELECT
         well_id,
         project_id,
@@ -54,8 +70,6 @@ WITH LiveWells AS
         kpi_miss_reason
 
     FROM [AlTasnimBI].[well].[well_master]
-
-    WHERE eng_completion_date IS NULL
 ),
 
 
@@ -197,34 +211,22 @@ Signals AS
               OR lw.ex_rig_off_date IS NULL
                 THEN 1
             ELSE 0
-        END AS dq_missing_baseline,
+        END AS dq_missing_baseline
 
-
-        /* ----- DATA QUALITY: actual implausibly far before plan -----
-           Finishing early is normal; an actual date more than 180
-           days before its baseline means the two were maintained
-           against different schedules, which inflates the computed
-           lateness. */
-        CASE
-            WHEN (
-                    lw.rig_on_date IS NOT NULL
-                AND lw.ex_rig_on_date IS NOT NULL
-                AND DATEDIFF(day, lw.rig_on_date, lw.ex_rig_on_date) > 180
-                 )
-              OR (
-                    lw.rig_off_date IS NOT NULL
-                AND lw.ex_rig_off_date IS NOT NULL
-                AND DATEDIFF(day, lw.rig_off_date, lw.ex_rig_off_date) > 180
-                 )
-                THEN 1
-            ELSE 0
-        END AS dq_actual_far_before_plan
+        /* NOTE - a previous data-quality flag here treated an actual
+           date falling well before its baseline as a suspect record.
+           business_rules.md §5 is explicit that an actual earlier than
+           expected means the work finished AHEAD OF SCHEDULE and must
+           never be reported as a delay, a variance problem, a
+           data-quality issue or an anomaly. The flag was therefore
+           removed rather than re-tuned. Direction is carried by the
+           signed variance instead. */
 
         /* DUE / NON-DUE is derived from kpi_miss_reason in
            app/services/attribution.py — one definition, shared
            with the per-well risk assessment. */
 
-    FROM LiveWells AS lw
+    FROM AllWells AS lw
 ),
 
 
@@ -290,8 +292,26 @@ SELECT
 
     pegged_date,
     flaf_issue_date,
+    eng_completion_date,
 
     delay_days,
+
+    /* ----- VERDICTS ----- */
+
+    CASE WHEN eng_completion_date IS NOT NULL
+         THEN 1 ELSE 0 END AS is_completed,
+
+    /* Scoped to live wells on purpose: a hooked-up well cannot slip
+       (business_rules.md §8), so completion suppresses the verdict
+       even though the milestone tests above still evaluated. */
+    CASE WHEN eng_completion_date IS NULL
+          AND (slip_rig_on = 1
+            OR slip_rig_off = 1
+            OR slip_hookup = 1
+            OR slip_construction = 1
+            OR slip_pegging = 1
+            OR slip_flaf = 1)
+         THEN 1 ELSE 0 END AS is_slipped,
 
     slip_rig_on,
     slip_rig_off,
@@ -308,18 +328,13 @@ SELECT
     kpi_miss_reason,
 
     dq_rig_off_before_rig_on,
-    dq_missing_baseline,
-    dq_actual_far_before_plan
+    dq_missing_baseline
 
 FROM Scored
 
-WHERE slip_rig_on = 1
-   OR slip_rig_off = 1
-   OR slip_hookup = 1
-   OR slip_construction = 1
-   OR slip_pegging = 1
-   OR slip_flaf = 1
+/* No WHERE: every well is returned and classified. Filtering to the
+   slipped ones is the caller's job (slipped_wells.get_slipped_wells),
+   so the slip definition is not written down twice. */
 
 ORDER BY
-    delay_days DESC,
     well_id;

@@ -1,10 +1,29 @@
+"""
+ORCHESTRATION of the evidence pipeline.
+
+    DATABASE
+      -> well_evidence.sql          authoritative deterministic evidence
+      -> raw_evidence               untouched SQL output (both result sets)
+      -> build_ui_json()            dashboard payload
+      -> build_ai_evidence()        compact facts for the LLM
+      -> investigation response
+
+The AI summary endpoint consumes the SAME bundle, so there is never a
+second, different interpretation of the database.
+"""
+
 from pathlib import Path
 import json
-import math
-import re
 from tempfile import NamedTemporaryFile
 
-import pandas as pd
+from app.services.ai_evidence import build_ai_evidence, highlight_terms
+from app.services.crew import get_well_crews
+from app.services.evidence import (
+    get_well_evidence,
+    WellNotFoundError  # re-exported: the API layer imports it from here
+)
+from app.services.serialization import clean_value
+from app.services.ui_json import build_ui_json
 
 
 # ============================================================
@@ -13,449 +32,120 @@ import pandas as pd
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-SQL_FILE = BASE_DIR / "sql" / "investigation.sql"
-
-MILESTONES_SQL_FILE = BASE_DIR / "sql" / "well_milestones.sql"
+PROJECT_IDS_SQL_FILE = BASE_DIR / "sql" / "well_project_ids.sql"
 
 JSON_DIR = BASE_DIR / "app" / "responses"
 
+# The dashboard payload (existing filename kept).
 JSON_FILE = JSON_DIR / "investigation.json"
 
+# Kept so a summary can be audited later without re-querying (see §19 of
+# the refactor brief). Both are git-ignored along with investigation.json.
+RAW_EVIDENCE_FILE = JSON_DIR / "evidence_raw.json"
+AI_EVIDENCE_FILE = JSON_DIR / "evidence_ai.json"
+
+
+__all__ = [
+    "WellNotFoundError",
+    "get_evidence_bundle",
+    "get_well_risk_assessment",
+    "get_well_project_ids",
+    "update_investigation_json"
+]
+
 
 # ============================================================
-# READ INVESTIGATION SQL
+# ALL PROJECT IDs FOR THE WELL
 # ============================================================
+#
+# A separate lookup: well_master carries one project_id per well, but the
+# task records frequently reference others (separate scopes of work
+# tracked as separate projects). Not part of the authoritative evidence
+# SQL, so it stays its own small query.
 
-def load_investigation_sql():
+def get_well_project_ids(connection, well_id: int):
 
-    if not SQL_FILE.exists():
+    if not PROJECT_IDS_SQL_FILE.exists():
 
         raise FileNotFoundError(
-            f"Investigation SQL file not found: {SQL_FILE}"
+            f"Well project IDs SQL file not found: {PROJECT_IDS_SQL_FILE}"
         )
 
-    query = SQL_FILE.read_text(
-        encoding="utf-8"
-    )
-
-    if not query.strip():
-
-        raise ValueError(
-            "Investigation SQL file is empty."
-        )
-
-    return query
-
-
-# ============================================================
-# PREPARE SQL FOR SELECTED WELL
-# ============================================================
-
-def prepare_investigation_sql(query):
-
-    """
-    Replace the hardcoded @WellId value with
-    a parameter placeholder.
-
-    Example:
-
-        DECLARE @WellId INT = 33151;
-
-    becomes:
-
-        DECLARE @WellId INT = ?;
-    """
-
-    pattern = (
-        r"DECLARE\s+@WellId\s+INT\s*=\s*"
-        r"[^;]+;"
-    )
-
-    replacement = (
-        "DECLARE @WellId INT = ?;"
-    )
-
-    updated_query, count = re.subn(
-        pattern,
-        replacement,
-        query,
-        count=1,
-        flags=re.IGNORECASE
-    )
-
-    if count == 0:
-
-        raise ValueError(
-            "Could not find "
-            "'DECLARE @WellId INT = ...;' "
-            "in investigation.sql"
-        )
-
-    return updated_query
-
-
-# ============================================================
-# CLEAN DATABASE VALUES FOR JSON
-# ============================================================
-
-def clean_value(value):
-
-    if value is None:
-        return None
-
-    if isinstance(value, dict):
-        return {str(key): clean_value(item) for key, item in value.items()}
-
-    if isinstance(value, (list, tuple, set)):
-        return [clean_value(item) for item in value]
-
-    # --------------------------------------------------------
-    # datetime / date / time / datetimeoffset-like objects
-    # --------------------------------------------------------
-
-    if hasattr(value, "isoformat"):
-
-        return value.isoformat()
-
-    # --------------------------------------------------------
-    # Bytes
-    # --------------------------------------------------------
-
-    if isinstance(value, bytes):
-
-        try:
-
-            return value.decode("utf-8")
-
-        except UnicodeDecodeError:
-
-            try:
-
-                return value.decode("utf-16")
-
-            except UnicodeDecodeError:
-
-                return value.hex()
-
-    # --------------------------------------------------------
-    # Integers stay integers — IDs must not become 14.0
-    # --------------------------------------------------------
-
-    if isinstance(value, (bool, int)):
-
-        return value
-
-    # --------------------------------------------------------
-    # Decimal and similar numeric objects
-    # --------------------------------------------------------
-
-    if hasattr(value, "__float__") and not isinstance(value, str):
-
-        try:
-
-            numeric_value = float(value)
-
-            if math.isnan(numeric_value):
-
-                return None
-
-            if math.isinf(numeric_value):
-
-                return None
-
-            return numeric_value
-
-        except (TypeError, ValueError):
-
-            pass
-
-    # --------------------------------------------------------
-    # Normal JSON-compatible values
-    # --------------------------------------------------------
-
-    return value
-
-
-# ============================================================
-# DEBUG RESULT COLUMN TYPES
-# ============================================================
-
-def print_result_columns(cursor):
-
-    """
-    Print column index, name and ODBC type.
-
-    Useful for identifying unsupported SQL Server
-    datetimeoffset columns.
-    """
-
-    print()
-    print("=" * 80)
-    print("INVESTIGATION RESULT COLUMNS")
-    print("=" * 80)
-
-    for index, column in enumerate(cursor.description):
-
-        column_name = column[0]
-        column_type = column[1]
-
-        print(
-            f"Column {index} | "
-            f"Name: {column_name} | "
-            f"ODBC Type: {column_type}"
-        )
-
-    print("=" * 80)
-    print()
-
-
-# ============================================================
-# EXECUTE INVESTIGATION SQL
-# ============================================================
-
-def get_investigation_data(
-    connection,
-    well_id: int
-):
-
-    # --------------------------------------------------------
-    # Load SQL
-    # --------------------------------------------------------
-
-    original_query = load_investigation_sql()
-
-
-    # --------------------------------------------------------
-    # Replace @WellId declaration
-    # --------------------------------------------------------
-
-    query = prepare_investigation_sql(
-        original_query
-    )
-
-
-    # --------------------------------------------------------
-    # Print useful information
-    # --------------------------------------------------------
-
-    print()
-    print("=" * 80)
-    print(
-        f"Starting investigation for Well {well_id}"
-    )
-    print("=" * 80)
-
-    print(
-        f"Running investigation SQL for Well ID: {well_id}"
-    )
-
-
-    # --------------------------------------------------------
-    # Create cursor
-    # --------------------------------------------------------
+    query = PROJECT_IDS_SQL_FILE.read_text(encoding="utf-8")
 
     cursor = connection.cursor()
 
-
     try:
 
-        # ----------------------------------------------------
-        # Execute READ-ONLY SQL
-        # ----------------------------------------------------
-
-        cursor.execute(
-            query,
-            well_id
-        )
-
-
-        print(
-            "Investigation SQL executed successfully."
-        )
-
-
-        # ----------------------------------------------------
-        # Check result set
-        # ----------------------------------------------------
+        cursor.execute(query, well_id)
 
         if cursor.description is None:
+            return []
 
-            raise ValueError(
-                "Investigation SQL did not return a result set."
-            )
+        columns = [column[0] for column in cursor.description]
 
-
-        # ----------------------------------------------------
-        # DEBUG COLUMN INFORMATION
-        # ----------------------------------------------------
-
-        print_result_columns(cursor)
-
-
-        # ----------------------------------------------------
-        # Get column names
-        # ----------------------------------------------------
-
-        columns = [
-            column[0]
-            for column in cursor.description
+        return [
+            dict(zip(columns, row))
+            for row in cursor.fetchall()
         ]
 
-
-        # ----------------------------------------------------
-        # Fetch result
-        # ----------------------------------------------------
-
-        print(
-            "Fetching investigation result..."
-        )
-
-        rows = cursor.fetchall()
-
-
-        print(
-            f"Database fetch completed. "
-            f"Rows fetched: {len(rows)}"
-        )
-
-
-        # ----------------------------------------------------
-        # Convert rows to dictionaries
-        # ----------------------------------------------------
-
-        records = []
-
-        for row in rows:
-
-            record = {}
-
-            for index, column in enumerate(columns):
-
-                record[column] = clean_value(
-                    row[index]
-                )
-
-            records.append(record)
-
-
-        # ----------------------------------------------------
-        # Final result
-        # ----------------------------------------------------
-
-        print(
-            f"Investigation query returned "
-            f"{len(records)} rows for Well {well_id}"
-        )
-
-        return records
-
-
     finally:
-
         cursor.close()
 
 
 # ============================================================
-# WELL MILESTONE HEADER (authoritative, task-independent)
+# EVIDENCE BUNDLE
 # ============================================================
 
-class WellNotFoundError(Exception):
-    """Raised when a well_id has no live (non-completed) record."""
+def get_evidence_bundle(connection, well_id: int):
 
+    """
+    One database round-trip through the authoritative SQL, transformed
+    into both consumer shapes.
 
-def get_well_milestones(
-    connection,
-    well_id: int
-):
-
-    if not MILESTONES_SQL_FILE.exists():
-
-        raise FileNotFoundError(
-            f"Well milestones SQL file not found: {MILESTONES_SQL_FILE}"
-        )
-
-    query = MILESTONES_SQL_FILE.read_text(
-        encoding="utf-8"
-    )
-
-    cursor = connection.cursor()
-
-    try:
-
-        cursor.execute(
-            query,
-            well_id
-        )
-
-        if cursor.description is None:
-
-            raise ValueError(
-                "Well milestones SQL did not return a result set."
-            )
-
-        columns = [
-            column[0]
-            for column in cursor.description
-        ]
-
-        row = cursor.fetchone()
-
-        if row is None:
-
-            raise WellNotFoundError(
-                f"Well {well_id} was not found or is already completed."
-            )
-
-        return {
-            column: row[index]
-            for index, column in enumerate(columns)
+    Returns:
+        {
+            "raw":             untouched SQL evidence (well + activities),
+            "ui":              dashboard JSON,
+            "ai":              compact AI evidence JSON,
+            "highlight_terms": database-derived terms for the frontend
         }
+    """
 
-    finally:
+    raw_evidence = get_well_evidence(connection, well_id)
 
-        cursor.close()
+    project_ids = get_well_project_ids(connection, well_id)
+
+    crews = get_well_crews(connection, well_id)
+
+    ui = build_ui_json(raw_evidence, project_ids, crews)
+
+    # The crew roster is deliberately NOT passed to the AI evidence. It is
+    # a dashboard fact resolved entirely in SQL/Python, and a full roster
+    # would add hundreds of tokens to every narration request against an
+    # account limited to 8000 tokens per minute.
+    ai = build_ai_evidence(raw_evidence, ui, project_ids)
+
+    return {
+        "raw": raw_evidence,
+        "ui": ui,
+        "ai": ai,
+        "highlight_terms": highlight_terms(ai)
+    }
 
 
-# ============================================================
-# WELL RISK ASSESSMENT (orchestrator)
-# ============================================================
+def get_well_risk_assessment(connection, well_id: int):
 
-def get_well_risk_assessment(
-    connection,
-    well_id: int
-):
+    """The dashboard payload. Kept for the existing API contract."""
 
-    from app.services.risk import build_well_risk_summary
-
-    well_row = get_well_milestones(
-        connection,
-        well_id
-    )
-
-    records = get_investigation_data(
-        connection,
-        well_id
-    )
-
-    task_df = pd.DataFrame(records)
-
-    return build_well_risk_summary(
-        well_row,
-        task_df
-    )
+    return get_evidence_bundle(connection, well_id)["ui"]
 
 
 # ============================================================
-# UPDATE SINGLE JSON FILE
+# DEBUG PERSISTENCE
 # ============================================================
 
-def update_investigation_json(
-    summary
-):
-
-    # --------------------------------------------------------
-    # Write / overwrite same JSON file
-    # --------------------------------------------------------
+def _write_json(path, payload):
 
     JSON_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -464,23 +154,40 @@ def update_investigation_json(
         mode="w",
         encoding="utf-8",
         dir=JSON_DIR,
-        prefix="investigation-",
+        prefix=f"{path.stem}-",
         suffix=".tmp",
         delete=False
     ) as file:
-        json.dump(summary, file, indent=4, ensure_ascii=False, allow_nan=False)
+        json.dump(payload, file, indent=4, ensure_ascii=False, default=str)
         temporary_file = Path(file.name)
 
-    temporary_file.replace(JSON_FILE)
+    temporary_file.replace(path)
 
 
-    # --------------------------------------------------------
-    # Log
-    # --------------------------------------------------------
+def update_investigation_json(bundle):
 
-    print(
-        f"Investigation JSON updated: {JSON_FILE}"
+    """
+    Persist the dashboard payload plus the raw and compact evidence, so a
+    summary can be investigated afterwards without touching the database.
+    """
+
+    _write_json(JSON_FILE, bundle["ui"])
+
+    _write_json(
+        RAW_EVIDENCE_FILE,
+        {
+            "well_id": bundle["raw"]["well_id"],
+            "well": {
+                key: clean_value(value)
+                for key, value in bundle["raw"]["well"].items()
+            },
+            "activities": [
+                {key: clean_value(value) for key, value in activity.items()}
+                for activity in bundle["raw"]["activities"]
+            ]
+        }
     )
 
+    _write_json(AI_EVIDENCE_FILE, bundle["ai"])
 
-    return summary
+    return bundle["ui"]

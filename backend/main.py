@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.wells import router as wells_router
 from app.api.investigation import router as investigation_router
+from app.api.insights import router as insights_router
 
 
 app = FastAPI(
@@ -36,6 +37,7 @@ app.add_middleware(
 
 app.include_router(wells_router)
 app.include_router(investigation_router)
+app.include_router(insights_router)
 
 
 @app.get("/")

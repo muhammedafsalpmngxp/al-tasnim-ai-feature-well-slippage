@@ -37,8 +37,7 @@ SLIP_REASON_LABELS = {
 
 DQ_FLAGS = (
     "dq_rig_off_before_rig_on",
-    "dq_missing_baseline",
-    "dq_actual_far_before_plan"
+    "dq_missing_baseline"
 )
 
 
@@ -51,7 +50,32 @@ def _slip_reasons(row):
     ]
 
 
-def get_slipped_wells(connection):
+# ============================================================
+# PICKER CATEGORIES
+# ============================================================
+#
+# The dashboard's well picker colours every well by one of four
+# mutually exclusive states. The display wording lives here rather than
+# in the frontend so the classification and its label have one home.
+#
+# AL TASNIM / PDO are the business names for the accountability split
+# the evidence layer already computes (DUE / NON_DUE): a slipped well
+# Al Tasnim owns, versus one attributed to PDO-side causes.
+
+WELL_CATEGORY_LABELS = {
+    "COMPLETED": "Completed",
+    "AL_TASNIM": "AL TASNIM",
+    "PDO": "PDO",
+    "ON_TRACK": "On track"
+}
+
+
+def _read_wells(connection):
+
+    """
+    Every well, classified. slipped_wells.sql returns one row per well
+    with its is_completed / is_slipped verdicts already decided.
+    """
 
     query = SQL_FILE.read_text(
         encoding="utf-8"
@@ -74,9 +98,73 @@ def get_slipped_wells(connection):
         axis=1
     )
 
-    df = df.drop(
+    return df.drop(
         columns=list(SLIP_REASON_LABELS) + list(DQ_FLAGS)
     )
 
-    # SQL already orders by delay_days DESC; keep that ordering.
-    return df.reset_index(drop=True)
+
+def _category(row):
+
+    """
+    One state per well, in precedence order. Completion wins: a
+    hooked-up well is reported as completed rather than by whatever its
+    milestones once looked like.
+    """
+
+    if row["is_completed"] == 1:
+        return "COMPLETED"
+
+    if row["is_slipped"] != 1:
+        return "ON_TRACK"
+
+    return "AL_TASNIM" if row["due_status"] == "DUE" else "PDO"
+
+
+def get_slipped_wells(connection):
+
+    """
+    The slipped wells only — the existing contract, used by the summary
+    counts and the portfolio narrative. The SQL now returns every well,
+    so the slipped subset is selected on its is_slipped verdict.
+    """
+
+    df = _read_wells(connection)
+
+    if df.empty:
+        return df
+
+    slipped = df[df["is_slipped"] == 1]
+
+    # Constant once filtered, so they would only be noise downstream.
+    return (
+        slipped
+        .drop(columns=["is_slipped", "is_completed"])
+        .reset_index(drop=True)
+    )
+
+
+def get_well_list(connection):
+
+    """
+    Every well for the dashboard picker: the id and its category, and
+    nothing else. Ordered ascending by well_id by the SQL.
+    """
+
+    df = _read_wells(connection)
+
+    if df.empty:
+        return []
+
+    wells = []
+
+    for _, row in df.iterrows():
+
+        category = _category(row)
+
+        wells.append({
+            "well_id": int(row["well_id"]),
+            "category": category,
+            "category_label": WELL_CATEGORY_LABELS[category]
+        })
+
+    return wells

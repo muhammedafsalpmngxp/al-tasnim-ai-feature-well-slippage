@@ -1,46 +1,83 @@
 /* ============================================================
    AL-TASNIM
    WELL SLIPPAGE AI
-   ONE WELL - DETERMINISTIC EXTRACTION / AI EVIDENCE LAYER
+   ONE WELL - AUTHORITATIVE DETERMINISTIC EVIDENCE LAYER
    ============================================================
 
+   THIS FILE IS THE SINGLE SOURCE OF TRUTH FOR WELL-SLIPPAGE
+   CALCULATION. Python structures its output; the LLM only
+   narrates it. Neither may recalculate anything computed here.
+
    INPUT:
-       @WellId
+       @WellId  (bound as a `?` parameter)
 
-   PURPOSE:
-       Provide a clean deterministic evidence layer for the
-       Well Slippage AI.
+   RETURNS TWO RESULT SETS:
 
-   CURRENT SCOPE:
-       - Active well filtering
-       - Well milestone status
-       - Current logical task extraction
-       - Planner schedule variance
-       - Activity mapping
-       - Activity classification
-       - WBS mapping
-       - Quantity evidence
-       - Productivity evidence
-       - Resource-data evidence
-       - Data-quality detection
-       - Deterministic AI schedule classification
+       1. WELL-LEVEL EVIDENCE   exactly one row per live well.
+                                Always returned, even when the
+                                well currently has no tasks.
 
-   NOT YET INCLUDED:
-       - activity_task_plan integration
-       - historical productivity model
-       - task forecast date
-       - activity forecast
-       - WBS forecast
-       - well forecast
-       - resource shortage inference
-       - root-cause inference
-       - recovery forecast
-       - recovery recommendation
+       2. ACTIVITY-LEVEL        one row per current logical task,
+          EVIDENCE              with the full evidence projection.
+                                NOT filtered to delayed rows -
+                                filtering/ranking is a
+                                presentation concern.
+
+   PROVENANCE:
+       CTEs 1-15 are copied byte-for-byte from the approved
+       source (sql_ai1.txt). No milestone, delay, DQ, activity,
+       WBS, quantity, productivity or classification rule has
+       been altered. Three mechanical changes were made:
+
+       1. The hardcoded @WellId literal became a `?` parameter.
+
+       2. CTEs 1-2 (ActiveWell + WellMilestones) are materialised
+          into #WellEvidence, and CTEs 3-15 reference that temp
+          table instead of re-deriving them. This keeps the
+          milestone rules defined exactly ONCE and lets the
+          well-level evidence survive a well with zero tasks
+          (EnrichedTasks INNER JOINs the task set, so the
+          original single-statement form returned no rows at all
+          for such a well).
+
+       3. ADDED COLUMNS - the approved source computes variance
+          for pegging, FLAF and construction, but has NO rig-on,
+          rig-off or hook-up delay column. Those three are
+          required by the milestone evidence contract, so they
+          are computed HERE (never in Python or the LLM), using
+          the same shape as the existing variance rules:
+
+            rig_on_delay_days   / rig_on_status
+            rig_off_delay_days  / rig_off_status
+            hookup_delay_days
+
+          Also added, purely to avoid a Python-side clamp:
+
+            pegging_delay_days  = pegging_variance_days floored at 0
+            flaf_delay_days     = flaf_variance_days floored at 0
+
+          The original SIGNED *_variance_days columns are
+          preserved untouched alongside them - a well that pegged
+          early keeps its negative variance as evidence, while
+          *_delay_days reads 0 because it is not late.
+
+       4. TWO RAW PASSTHROUGH COLUMNS - the approved source's
+          ActiveWell does not select well_master.kpi_miss_reason
+          or well_master.remarks, but accountability (due /
+          non-due attribution) and the remarks evidence both
+          require them. They are joined in below rather than
+          edited into ActiveWell, so CTEs 1-2 stay byte-exact.
+          well_master holds one row per well_id, so the join
+          cannot fan out. Neither column is calculated - they
+          are copied straight through.
 
    IMPORTANT:
        This query is an evidence/extraction layer.
        It does not silently repair questionable database data.
    ============================================================ */
+
+
+SET NOCOUNT ON;
 
 
 DECLARE @WellId INT = ?;
@@ -49,7 +86,12 @@ DECLARE @Today DATE = CAST(GETDATE() AS DATE);
 
 
 /* ============================================================
-   1. ACTIVE WELL
+   STATEMENT 1
+   WELL-LEVEL EVIDENCE  ->  #WellEvidence
+
+   Sections 1-2 of the approved source, verbatim. Materialised
+   so that sections 3-15 below consume it rather than redefining
+   the milestone rules.
    ============================================================ */
 
 WITH ActiveWell AS
@@ -85,11 +127,21 @@ WITH ActiveWell AS
     FROM [AlTasnimBI].[well].[well_master] AS wm
 
     /* ========================================================
-       COMPLETED-WELL EXCLUSION MUST BE FIRST
+       ONE WELL, COMPLETE OR NOT
+
+       This used to also require eng_completion_date IS NULL, so a
+       completed well could not be opened at all. The dashboard now
+       lists every well and a completed one must show its evidence
+       like any other, so completion is no longer an exclusion.
+
+       Completion is still carried as a FACT: eng_completion_date is
+       selected above, risk.classify_scenario() reads it to return the
+       COMPLETED scenario, and slippage detection stays scoped to live
+       wells in slipped_wells.sql (business_rules.md §8 — a hooked-up
+       well cannot slip).
        ======================================================== */
 
-    WHERE wm.eng_completion_date IS NULL
-      AND wm.well_id = @WellId
+    WHERE wm.well_id = @WellId
 ),
 
 
@@ -395,9 +447,191 @@ WellMilestones AS
         END AS dq_rig_off_before_rig_on
 
     FROM ActiveWell AS aw
-),
+)
+
+/* ============================================================
+   ADDED DELAY COLUMNS (see header note 3)
+
+   Computed in SQL so that no consumer has to derive a delay.
+   All are floored at 0: "not late" is 0, never a negative
+   number. NULL means the baseline needed to judge it is
+   missing, which is itself a data-quality signal.
+   ============================================================ */
+
+SELECT
+
+    wm.*,
 
 
+    /* ----- RIG-ON: expected ex_rig_on_date vs actual ----- */
+
+    CASE
+
+        WHEN wm.ex_rig_on_date IS NULL
+            THEN NULL
+
+        WHEN wm.rig_on_date IS NOT NULL
+         AND wm.rig_on_date > wm.ex_rig_on_date
+            THEN DATEDIFF(day, wm.ex_rig_on_date, wm.rig_on_date)
+
+        WHEN wm.rig_on_date IS NOT NULL
+            THEN 0
+
+        WHEN @Today > wm.ex_rig_on_date
+            THEN DATEDIFF(day, wm.ex_rig_on_date, @Today)
+
+        ELSE 0
+
+    END AS rig_on_delay_days,
+
+
+    CASE
+
+        WHEN wm.ex_rig_on_date IS NULL
+            THEN 'DATA_QUALITY_ISSUE'
+
+        WHEN wm.rig_on_date IS NULL
+         AND @Today > wm.ex_rig_on_date
+            THEN 'OVERDUE'
+
+        WHEN wm.rig_on_date IS NULL
+            THEN 'PENDING'
+
+        WHEN wm.rig_on_date < wm.ex_rig_on_date
+            THEN 'AHEAD_OF_SCHEDULE'
+
+        WHEN wm.rig_on_date = wm.ex_rig_on_date
+            THEN 'ON_SCHEDULE'
+
+        ELSE 'DELAYED'
+
+    END AS rig_on_status,
+
+
+    /* ----- RIG-OFF: expected ex_rig_off_date vs actual ----- */
+
+    CASE
+
+        WHEN wm.ex_rig_off_date IS NULL
+            THEN NULL
+
+        WHEN wm.rig_off_date IS NOT NULL
+         AND wm.rig_off_date > wm.ex_rig_off_date
+            THEN DATEDIFF(day, wm.ex_rig_off_date, wm.rig_off_date)
+
+        WHEN wm.rig_off_date IS NOT NULL
+            THEN 0
+
+        WHEN @Today > wm.ex_rig_off_date
+            THEN DATEDIFF(day, wm.ex_rig_off_date, @Today)
+
+        ELSE 0
+
+    END AS rig_off_delay_days,
+
+
+    CASE
+
+        WHEN wm.ex_rig_off_date IS NULL
+            THEN 'DATA_QUALITY_ISSUE'
+
+        WHEN wm.rig_off_date IS NULL
+         AND @Today > wm.ex_rig_off_date
+            THEN 'OVERDUE'
+
+        WHEN wm.rig_off_date IS NULL
+            THEN 'PENDING'
+
+        WHEN wm.rig_off_date < wm.ex_rig_off_date
+            THEN 'AHEAD_OF_SCHEDULE'
+
+        WHEN wm.rig_off_date = wm.ex_rig_off_date
+            THEN 'ON_SCHEDULE'
+
+        ELSE 'DELAYED'
+
+    END AS rig_off_status,
+
+
+    /* ----- HOOK-UP: hookup_deadline vs eng_completion_date -----
+       hookup_deadline is already computed in section 2 as
+       rig_off_date + 2 days (or ex_rig_off_date + 2 days). */
+
+    CASE
+
+        WHEN wm.hookup_deadline IS NULL
+            THEN NULL
+
+        WHEN wm.eng_completion_date IS NOT NULL
+         AND wm.eng_completion_date > wm.hookup_deadline
+            THEN DATEDIFF(day, wm.hookup_deadline, wm.eng_completion_date)
+
+        WHEN wm.eng_completion_date IS NOT NULL
+            THEN 0
+
+        WHEN @Today > wm.hookup_deadline
+            THEN DATEDIFF(day, wm.hookup_deadline, @Today)
+
+        ELSE 0
+
+    END AS hookup_delay_days,
+
+
+    /* ----- ZERO-CLAMPED PEGGING / FLAF -----
+       The signed pegging_variance_days / flaf_variance_days from
+       section 2 are preserved above via wm.*; these are the
+       floored-at-0 companions so nothing downstream has to clamp. */
+
+    CASE
+        WHEN wm.pegging_variance_days IS NULL THEN NULL
+        WHEN wm.pegging_variance_days > 0 THEN wm.pegging_variance_days
+        ELSE 0
+    END AS pegging_delay_days,
+
+
+    CASE
+        WHEN wm.flaf_variance_days IS NULL THEN NULL
+        WHEN wm.flaf_variance_days > 0 THEN wm.flaf_variance_days
+        ELSE 0
+    END AS flaf_delay_days,
+
+
+    /* ----- RAW PASSTHROUGH (see header note 4) -----
+       Copied straight from well_master, not calculated:
+       accountability attribution needs the miss reason, and the
+       remarks are reported as evidence. */
+
+    src.kpi_miss_reason,
+    src.remarks
+
+INTO #WellEvidence
+
+FROM WellMilestones AS wm
+
+INNER JOIN [AlTasnimBI].[well].[well_master] AS src
+    ON src.well_id = wm.well_id;
+
+
+/* ============================================================
+   RESULT SET 1 - WELL-LEVEL EVIDENCE
+   ============================================================ */
+
+SELECT * FROM #WellEvidence;
+
+
+/* ============================================================
+   STATEMENT 2 / RESULT SET 2
+   ACTIVITY-LEVEL EVIDENCE
+
+   Sections 3-15 of the approved source, verbatim, followed by
+   its full evidence projection. The source's trailing
+   `WHERE schedule_risk = 'RED_DELAYED' OR ...` filter is
+   deliberately NOT applied here: the evidence layer returns
+   every current logical task, and selecting/ranking the delayed
+   ones is done downstream so the same query can answer both.
+   ============================================================ */
+
+WITH
 /* ============================================================
    3. NORMALIZED TASK HISTORY
    ============================================================ */
@@ -497,7 +731,7 @@ NormalizedTaskHistory AS
 
     FROM [AlTasnimBI].[well].[task_daily] AS td
 
-    INNER JOIN ActiveWell AS aw
+    INNER JOIN #WellEvidence AS aw
         ON aw.well_id = td.well_id
 
     WHERE td.task_code IS NOT NULL
@@ -963,7 +1197,7 @@ WellWBSDiagnostic AS
 
     FROM [AlTasnimBI].[wbs].[WBS_master] AS w
 
-    INNER JOIN ActiveWell AS aw
+    INNER JOIN #WellEvidence AS aw
 
         ON TRY_CONVERT
            (
@@ -2649,7 +2883,7 @@ EnrichedTasks AS
 
         END AS dq_negative_remaining_duration
 
-    FROM WellMilestones AS aw
+    FROM #WellEvidence AS aw
 
     INNER JOIN TaskActivities AS ta
         ON ta.well_id = aw.well_id
@@ -2879,51 +3113,105 @@ SELECT
        ======================================================== */
 
     fr.well_id,
+    fr.project_id,
+
+
+    /* ========================================================
+       MASTER SCHEDULE
+       ======================================================== */
+
     fr.ex_rig_on_date,
     fr.rig_on_date,
+
     fr.ex_rig_off_date,
     fr.rig_off_date,
-
-    fr.pegged_date,
-    fr.flaf_issue_date,
-    fr.eng_completion_date,
-
-    fr.well_progress_raw AS well_progress,
-    fr.flowline_const_progress AS flowline_progress,
-    fr.material_avail_date,
 
 
     /* ========================================================
        MILESTONES
        ======================================================== */
 
+    fr.pegged_date,
+    fr.pegging_deadline,
     fr.pegging_status,
+    fr.pegging_variance_days,
+
+    fr.flaf_issue_date,
+    fr.flaf_deadline,
     fr.flaf_status,
+    fr.flaf_variance_days,
+
+    fr.construction_deadline,
     fr.construction_status,
+    fr.construction_lag_days,
+
+    fr.hookup_deadline,
     fr.hookup_status,
+
+    fr.eng_completion_date,
 
 
     /* ========================================================
-       DELAYED ACTIVITY
+       WELL PROGRESS
        ======================================================== */
 
-    fr.task_daily_id AS task_id,
+    fr.well_progress_raw,
+    fr.flowline_const_progress,
 
-    fr.project_type,
+    fr.material_avail_date,
 
+
+    /* ========================================================
+       WELL DQ
+       ======================================================== */
+
+    fr.dq_missing_ex_rig_on_date,
+    fr.dq_missing_master_project,
+    fr.dq_rig_on_before_expected,
+    fr.dq_rig_off_before_rig_on,
+
+
+    /* ========================================================
+       TASK
+       ======================================================== */
+
+    fr.task_daily_id,
+
+    fr.task_code,
     fr.activity_id,
-    fr.activity_code,
 
-    fr.activity_group_description AS activity,
+    fr.schedule_id,
 
-    COALESCE(
-        fr.master_crew_code,
-        fr.planned_crew
-    ) AS crew,
+    fr.task_project_id,
 
+    fr.ActionOn,
+
+
+    /* ========================================================
+       PLANNING
+       ======================================================== */
+
+    fr.required,
+    fr.planned,
+
+    fr.duration,
+    fr.remaining_duration,
+
+    fr.progress,
     fr.progress_percent,
 
+    fr.ready,
     fr.completed,
+
+    fr.[plan],
+
+
+    /* ========================================================
+       DATES
+       ======================================================== */
+
+    fr.committed_start,
+    fr.committed_end,
 
     fr.target_start,
     fr.target_end,
@@ -2931,61 +3219,271 @@ SELECT
     fr.actual_start,
     fr.actual_end,
 
-    fr.remaining_duration,
+
+    /* ========================================================
+       P6 REFERENCE
+       ======================================================== */
+
+    fr.p6_start_date,
+    fr.p6_end_date,
+
+
+    /* ========================================================
+       RESOURCE IDENTIFIERS
+       ======================================================== */
+
+    fr.planned_crew,
+
+    fr.crew_type_id,
+    fr.crew_id,
+    fr.emp_id,
+    fr.uom_id,
+
+    fr.data_employees,
+
+    fr.daily_employee_ids,
+    fr.daily_equipment_ids,
+
+    fr.daily_ph_name,
+
+
+    /* ========================================================
+       EXECUTION
+       ======================================================== */
+
+    fr.data_hours,
+    fr.data_qty,
+
+    fr.daily_actual_quantity,
+    fr.daily_actual_hours,
+
+    fr.daily_completed,
+
+
+    /* ========================================================
+       ASSIGNMENT
+       ======================================================== */
+
+    fr.task_assignee,
+    fr.supervisor_email,
+
+
+    /* ========================================================
+       ACTIVITY
+       ======================================================== */
+
+    fr.project_type,
+    fr.activity_type,
+
+    fr.activity_code,
+
+    fr.activity_group_description,
+    fr.master_crew_code,
+
+    fr.composition_code,
+
+    fr.activity_uom,
+    fr.norms,
+
+    fr.class_b_ptw,
+    fr.rfi,
+
+    fr.mapping_row_count,
+
+    fr.distinct_activity_code_count,
+    fr.distinct_project_type_count,
+    fr.distinct_composition_code_count,
+
+    fr.distinct_uom_count,
+    fr.distinct_norms_count,
+    fr.distinct_class_b_ptw_count,
+    fr.distinct_rfi_count,
+
+    fr.csv_row_count,
+
+    fr.distinct_description_count,
+    fr.distinct_crew_code_count,
+
+
+    /* ========================================================
+       WBS
+       ======================================================== */
+
+    fr.WBS_Code,
+
+    fr.wbs_activity_code,
+    fr.wbs_activity_name,
+
+    fr.Project_Def,
+    fr.WD_PRJ,
+
+    fr.Plant_Code,
+    fr.Cluster_code,
+
+    fr.Well_ID_Project_PO,
+
+    fr.Category,
+
+    fr.wbs_row_count,
+    fr.distinct_wbs_count,
+
+    fr.dq_wbs_mapping_conflict,
+
+    fr.dq_wbs_project_def_conflict,
+    fr.dq_wbs_wd_prj_conflict,
+    fr.dq_wbs_plant_conflict,
+    fr.dq_wbs_cluster_conflict,
+    fr.dq_wbs_well_reference_conflict,
+    fr.dq_wbs_category_conflict,
+
+
+    /* ========================================================
+       TASK STATUS
+       ======================================================== */
+
+    fr.start_status,
+    fr.start_variance_days,
 
     fr.end_status,
-
-    fr.end_variance_days AS delay_days,
+    fr.end_variance_days,
 
     fr.execution_status,
 
     fr.schedule_risk,
 
-    fr.target_achievability,
+
+    /* ========================================================
+       QUANTITY
+       ======================================================== */
+
+    fr.quantity_source,
+    fr.observed_quantity,
+
+    fr.calculated_remaining_quantity,
+
+    fr.dq_quantity_source_conflict,
 
 
     /* ========================================================
        PRODUCTIVITY
        ======================================================== */
 
-    fr.productivity_data_status AS productivity_status,
+    fr.data_productivity_qty_per_hour,
+    fr.daily_productivity_qty_per_hour,
+
+    fr.current_productivity_qty_per_hour,
+
+    fr.productivity_source,
+    fr.productivity_data_status,
+
+    fr.dq_productivity_source_conflict,
 
 
     /* ========================================================
-       RESOURCE
+       ACHIEVABILITY
        ======================================================== */
 
-    fr.resource_data_status AS resource_status,
+    fr.target_achievability,
+    fr.days_to_target_end,
 
 
     /* ========================================================
-       DATA QUALITY / AI EVIDENCE
+       RESOURCE DATA
        ======================================================== */
+
+    fr.resource_data_status,
+
+
+    /* ========================================================
+       DATA QUALITY
+       ======================================================== */
+
+    fr.dq_missing_target_start,
+    fr.dq_missing_target_end,
+
+    fr.dq_target_end_before_start,
+    fr.dq_actual_end_before_start,
+
+    fr.dq_invalid_progress,
+
+    fr.dq_completed_progress_conflict,
+    fr.dq_actual_end_completed_flag_conflict,
+
+    fr.dq_daily_completed_without_actual_end,
+    fr.dq_progress_complete_without_actual_end,
+
+    fr.dq_missing_activity_mapping,
+
+    fr.dq_activity_code_mapping_conflict,
+    fr.dq_project_type_mapping_conflict,
+    fr.dq_composition_mapping_conflict,
+
+    fr.dq_activity_uom_conflict,
+    fr.dq_activity_norms_conflict,
+    fr.dq_activity_class_b_ptw_conflict,
+    fr.dq_activity_rfi_conflict,
+
+    fr.dq_missing_activity_csv,
+
+    fr.dq_activity_description_conflict,
+    fr.dq_activity_crew_code_conflict,
+
+    fr.dq_missing_wbs,
+    fr.dq_wbs_mapping_conflict,
+
+    fr.dq_wbs_project_def_conflict,
+    fr.dq_wbs_wd_prj_conflict,
+    fr.dq_wbs_plant_conflict,
+    fr.dq_wbs_cluster_conflict,
+    fr.dq_wbs_well_reference_conflict,
+    fr.dq_wbs_category_conflict,
+
+    fr.dq_missing_master_project_id,
+    fr.dq_missing_task_project_id,
+    fr.dq_task_project_mismatch,
+
+    fr.dq_quantity_source_conflict,
+    fr.dq_productivity_source_conflict,
+
+    fr.dq_missing_action_date,
+
+    fr.dq_negative_duration,
+    fr.dq_negative_remaining_duration,
 
     fr.has_data_quality_issue,
+
+
+    /* ========================================================
+       AI EVIDENCE
+       ======================================================== */
 
     fr.ai_schedule_classification,
 
     fr.schedule_evidence_level,
 
-    fr.data_evidence_level
+    fr.data_evidence_level,
+
+
+    /* ========================================================
+       RAW DETAILS
+       ======================================================== */
+
+    fr.url,
+
+    fr.task_data,
+    fr.daily_data,
+
+    fr.created_at,
+    fr.updated_at,
+
+    fr.time_stamp
 
 
 FROM FinalResult AS fr
 
 
 /* ============================================================
-   ONLY DELAYED / AT-RISK ACTIVITIES
-   ============================================================ */
-
-WHERE
-    fr.schedule_risk = 'RED_DELAYED'
-    OR fr.end_status = 'OVERDUE_CURRENT_TASK_LAGGING'
-    OR fr.ai_schedule_classification = 'DELAYED'
-
-
-/* ============================================================
-   PRIORITIZATION
+   17. PRIORITIZATION
    ============================================================ */
 
 ORDER BY
@@ -3029,3 +3527,6 @@ ORDER BY
     fr.target_end,
 
     fr.task_code;
+
+
+DROP TABLE #WellEvidence;

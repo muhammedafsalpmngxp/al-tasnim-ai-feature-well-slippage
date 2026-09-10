@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react'
 
-import { getSummary, getSlippedWells, getWellInvestigation } from './api.js'
+import {
+  getSummary,
+  getWellList,
+  getWellInvestigation,
+  getPortfolioInsight,
+  getWellInsight
+} from './api.js'
 import SummaryCards from './components/SummaryCards.jsx'
 import WellSelect from './components/WellSelect.jsx'
 import WellDetail from './components/WellDetail.jsx'
+import InsightPanel from './components/InsightPanel.jsx'
 
 export default function App() {
   const [summary, setSummary] = useState(null)
@@ -11,25 +18,32 @@ export default function App() {
   const [loadError, setLoadError] = useState(null)
   const [loading, setLoading] = useState(true)
 
+  const [portfolioInsight, setPortfolioInsight] = useState(null)
+  const [portfolioInsightError, setPortfolioInsightError] = useState(null)
+
   const [selectedWellId, setSelectedWellId] = useState('')
   const [detail, setDetail] = useState(null)
   const [detailError, setDetailError] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
+
+  const [wellInsight, setWellInsight] = useState(null)
+  const [wellInsightError, setWellInsightError] = useState(null)
+  const [wellInsightLoading, setWellInsightLoading] = useState(false)
 
   useEffect(() => {
     let cancelled = false
 
     async function load() {
       try {
-        const [summaryData, slippedData] = await Promise.all([
+        const [summaryData, wellListData] = await Promise.all([
           getSummary(),
-          getSlippedWells()
+          getWellList()
         ])
 
         if (cancelled) return
 
         setSummary(summaryData)
-        setWells(slippedData.wells || [])
+        setWells(wellListData.wells || [])
       } catch (error) {
         if (!cancelled) setLoadError(error.message)
       } finally {
@@ -38,6 +52,16 @@ export default function App() {
     }
 
     load()
+
+    // The narrative is fetched separately so the counts render
+    // immediately and a slow or unavailable model never blocks them.
+    getPortfolioInsight()
+      .then((data) => {
+        if (!cancelled) setPortfolioInsight(data)
+      })
+      .catch((error) => {
+        if (!cancelled) setPortfolioInsightError(error.message)
+      })
 
     return () => {
       cancelled = true
@@ -48,10 +72,23 @@ export default function App() {
     setSelectedWellId(wellId)
     setDetail(null)
     setDetailError(null)
+    setWellInsight(null)
+    setWellInsightError(null)
 
     if (!wellId) return
 
     setDetailLoading(true)
+    setWellInsightLoading(true)
+
+    getWellInsight(wellId)
+      .then((data) => {
+        // Ignore a response for a well the user already moved off.
+        setWellInsight((current) =>
+          String(data.well_id) === String(wellId) ? data : current
+        )
+      })
+      .catch((error) => setWellInsightError(error.message))
+      .finally(() => setWellInsightLoading(false))
 
     try {
       setDetail(await getWellInvestigation(wellId))
@@ -75,7 +112,7 @@ export default function App() {
         <div className="alert alert-error">
           <strong>Cannot load wells.</strong>
           <p>{loadError}</p>
-          <code>cd backend &amp;&amp; uvicorn main:app --reload</code>
+          <code>python run.py</code>
         </div>
       )}
 
@@ -83,9 +120,18 @@ export default function App() {
         <>
           <SummaryCards summary={summary} />
 
+          <InsightPanel
+            title="Portfolio summary"
+            insight={portfolioInsight}
+            loading={!portfolioInsight && !portfolioInsightError}
+            error={portfolioInsightError}
+          />
+
           <section className="section">
-            <h2>Select a slipped well</h2>
-            <p className="muted">Ranked by delay, most delayed first.</p>
+            <h2>Select a well</h2>
+            <p className="muted">
+              Every well on record, by ascending well ID, coloured by state.
+            </p>
 
             <WellSelect
               wells={wells}
@@ -103,7 +149,14 @@ export default function App() {
             </div>
           )}
 
-          {detail && <WellDetail detail={detail} />}
+          {detail && (
+            <WellDetail
+              detail={detail}
+              insight={wellInsight}
+              insightLoading={wellInsightLoading}
+              insightError={wellInsightError}
+            />
+          )}
         </>
       )}
     </div>
