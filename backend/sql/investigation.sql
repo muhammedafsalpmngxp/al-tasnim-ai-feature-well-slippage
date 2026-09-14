@@ -52,7 +52,8 @@ WITH ActiveWell AS
     FROM [AlTasnimBI].[well].[well_master] AS wm
 
     WHERE wm.eng_completion_date IS NULL
-      AND wm.well_id = @WellId
+        AND CONVERT(VARCHAR(50), wm.well_id)
+            = CONVERT(VARCHAR(50), @WellId)
 ),
 
 
@@ -295,7 +296,8 @@ NormalizedTaskHistory AS
     FROM [AlTasnimBI].[well].[task_daily] AS td
 
     INNER JOIN ActiveWell AS aw
-        ON aw.well_id = td.well_id
+        ON CONVERT(VARCHAR(50), aw.well_id)
+           = CONVERT(VARCHAR(50), td.well_id)
 
     WHERE td.task_code IS NOT NULL
       AND LTRIM(RTRIM(td.task_code)) <> ''
@@ -774,7 +776,8 @@ EnrichedTasks AS
     FROM WellMilestones AS wm
 
     INNER JOIN TaskActivities AS ta
-        ON ta.well_id = wm.well_id
+        ON CONVERT(VARCHAR(50), ta.well_id)
+           = CONVERT(VARCHAR(50), wm.well_id)
 
     LEFT JOIN ActivityMapping AS am
         ON CAST(am.activity_id AS NVARCHAR(255))

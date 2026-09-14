@@ -13,6 +13,9 @@ from app.database.connection import (
 from app.services.slipped_wells import (
     get_slipped_wells
 )
+from app.services.calculation import (
+    calculate_well_metrics
+)
 
 
 router = APIRouter(
@@ -88,9 +91,15 @@ def slipped_wells():
                 clean_row
             )
 
+        calculations = calculate_well_metrics(
+            connection,
+            records,
+        )
+
         return {
             "success": True,
             "count": len(records),
+            "calculations": calculations,
             "wells": records
         }
 

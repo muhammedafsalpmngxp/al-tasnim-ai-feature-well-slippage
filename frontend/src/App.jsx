@@ -8,6 +8,7 @@ import InvestigationPanel from "./components/InvestigationPanel.jsx";
 export default function App() {
   const [pageState, setPageState] = useState({ status: "loading" });
   const [wells, setWells] = useState([]);
+  const [calculations, setCalculations] = useState(null);
   const [selectedWellId, setSelectedWellId] = useState(null);
 
   useEffect(() => {
@@ -30,6 +31,7 @@ export default function App() {
         ).values()].sort((a, b) => Number(a.well_id) - Number(b.well_id));
 
         setWells(normalizedWells);
+        setCalculations(result.calculations ?? null);
         setSelectedWellId((current) => current ?? normalizedWells[0]?.well_id ?? null);
         setPageState({ status: normalizedWells.length ? "ready" : "empty" });
       } catch (err) {
@@ -73,7 +75,7 @@ export default function App() {
         {pageState.status === "empty" && <div className="banner success">No slipped wells found.</div>}
         {pageState.status === "ready" && (
           <>
-            <KpiCards wells={wells} />
+            <KpiCards calculations={calculations} />
             <div className="workspace-grid">
               <WellsTable
                 wells={wells}

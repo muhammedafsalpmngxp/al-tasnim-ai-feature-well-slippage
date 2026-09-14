@@ -10,39 +10,6 @@ function statusTone(status) {
   return "is-neutral";
 }
 
-function delayText(value) {
-  if (value === null || value === undefined || value === "") return "—";
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return value;
-  return numeric > 0 ? `+${numeric} days` : `${numeric} days`;
-}
-
-function responsibilityFor(well) {
-  const cause = String(well.well_slippage_status ?? "").toUpperCase();
-
-  if (cause === "SLIPPED - PEGGING") {
-    return {
-      label: "Al Tasnim due",
-      detail: "Pegging delay may create penalty exposure for Al Tasnim.",
-      tone: "is-delayed",
-    };
-  }
-
-  if (cause === "SLIPPED - FLAF") {
-    return {
-      label: "Non-due for Al Tasnim",
-      detail: "FLAF is a PDO-originated delay; no Al Tasnim penalty applies.",
-      tone: "is-neutral",
-    };
-  }
-
-  return {
-    label: "Responsibility review required",
-    detail: "This delay cause is outside the pegging and FLAF rules.",
-    tone: "is-neutral",
-  };
-}
-
 export default function WellDetail({ well }) {
   if (!well) {
     return (
@@ -55,8 +22,6 @@ export default function WellDetail({ well }) {
   const summaryStatus = well.well_slippage_status
     ?? [well.rig_on_status, well.rig_off_status, well.hookup_status].find((status) => status === "DELAYED")
     ?? "MONITORING";
-  const responsibility = responsibilityFor(well);
-
   return (
     <section className="panel detail-panel">
       <div className="panel-heading">
@@ -67,40 +32,6 @@ export default function WellDetail({ well }) {
         <span className={`status-badge detail-badge ${statusTone(summaryStatus)}`}>
           <span className="status-dot" />{String(summaryStatus).replace(/_/g, " ")}
         </span>
-      </div>
-
-      <p className="panel-copy">Operational overview and live milestone slippage signals for this asset.</p>
-
-      <div className="detail-header">
-        <div className="detail-stat">
-          <span>Station</span>
-          <strong>{well.station_id ?? "—"}</strong>
-        </div>
-        <div className="detail-stat">
-          <span>Well type</span>
-          <strong>{well.well_type_id ?? "—"}</strong>
-        </div>
-      </div>
-
-      <div className="date-summary">
-        <div>
-          <span>FLAF date</span>
-          <strong>{formatDate(well.flaf_issue_date)}</strong>
-          <small>PDO milestone</small>
-        </div>
-        <div>
-          <span>Pegging date</span>
-          <strong>{formatDate(well.pegged_date)}</strong>
-          <small>PDO milestone</small>
-        </div>
-      </div>
-
-      <div className={`responsibility-callout ${responsibility.tone}`}>
-        <div>
-          <span className="responsibility-label">Delay responsibility</span>
-          <strong>{responsibility.label}</strong>
-        </div>
-        <p>{responsibility.detail}</p>
       </div>
 
       <div className="milestone-stack">
@@ -114,7 +45,6 @@ export default function WellDetail({ well }) {
           <div className="milestone-meta">
             <div><label>Expected</label><strong>{formatDate(well.ex_rig_on_date)}</strong></div>
             <div><label>Actual</label><strong>{formatDate(well.rig_on_date)}</strong></div>
-            <div><label>Delay</label><strong>{delayText(well.rig_on_delay_days)}</strong></div>
           </div>
         </article>
 
@@ -128,7 +58,6 @@ export default function WellDetail({ well }) {
           <div className="milestone-meta">
             <div><label>Expected</label><strong>{formatDate(well.ex_rig_off_date)}</strong></div>
             <div><label>Actual</label><strong>{formatDate(well.rig_off_date)}</strong></div>
-            <div><label>Delay</label><strong>{delayText(well.rig_off_delay_days)}</strong></div>
           </div>
         </article>
 
@@ -140,9 +69,34 @@ export default function WellDetail({ well }) {
             </span>
           </div>
           <div className="milestone-meta">
-            <div><label>Deadline</label><strong>{formatDate(well.hookup_deadline)}</strong></div>
-            <div><label>Completion</label><strong>{formatDate(well.eng_completion_date)}</strong></div>
-            <div><label>Delay</label><strong>{delayText(well.hookup_delay_days)}</strong></div>
+            <div><label>Expected</label><strong>{formatDate(well.hookup_deadline)}</strong></div>
+            <div><label>Actual</label><strong>{formatDate(well.eng_completion_date)}</strong></div>
+          </div>
+        </article>
+
+        <article className="milestone-card">
+          <div className="milestone-head">
+            <h3>FLAF milestone</h3>
+            <span className={`status-badge ${statusTone(well.flaf_status)}`}>
+              <span className="status-dot" />{well.flaf_status ? String(well.flaf_status).replace(/_/g, " ") : "NO DATE"}
+            </span>
+          </div>
+          <div className="milestone-meta">
+            <div><label>Expected</label><strong>{formatDate(well.flaf_deadline)}</strong></div>
+            <div><label>Actual</label><strong>{formatDate(well.flaf_issue_date)}</strong></div>
+          </div>
+        </article>
+
+        <article className="milestone-card">
+          <div className="milestone-head">
+            <h3>Pegging milestone</h3>
+            <span className={`status-badge ${statusTone(well.pegging_status)}`}>
+              <span className="status-dot" />{well.pegging_status ? String(well.pegging_status).replace(/_/g, " ") : "NO DATE"}
+            </span>
+          </div>
+          <div className="milestone-meta">
+            <div><label>Expected</label><strong>{formatDate(well.pegging_deadline)}</strong></div>
+            <div><label>Actual</label><strong>{formatDate(well.pegged_date)}</strong></div>
           </div>
         </article>
       </div>
