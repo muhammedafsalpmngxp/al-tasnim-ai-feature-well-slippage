@@ -731,8 +731,18 @@ NormalizedTaskHistory AS
 
     FROM [AlTasnimBI].[well].[task_daily] AS td
 
+    /* well.task_daily.well_id is VARCHAR and carries a handful of
+       non-numeric junk values ('0000F', '0000I', '0000J'). #WellEvidence
+       (and @WellId) are INT, so a direct `aw.well_id = td.well_id` lets
+       SQL Server implicitly convert the varchar side to int and throws
+       "Conversion failed ... to data type int" the moment that scan
+       touches one of those rows -- for ANY well, not just one with junk
+       data itself. TRY_CONVERT compares as int like the rest of the
+       query intends, but turns an unconvertible row into a NULL (a
+       non-match) instead of erroring, matching the same pattern already
+       used below for wbs.WBS_master.Well_ID_Project_PO. */
     INNER JOIN #WellEvidence AS aw
-        ON aw.well_id = td.well_id
+        ON aw.well_id = TRY_CONVERT(int, td.well_id)
 
     WHERE td.task_code IS NOT NULL
       AND LTRIM(RTRIM(td.task_code)) <> ''
@@ -809,41 +819,73 @@ TaskActivities AS
 
 /* ============================================================
    6. ACTIVITY MAPPING DIAGNOSTIC
+
+   Source switched from dbo.activity_master_mapping to
+   dbo.mapping_master. The old table only resolves a minority of
+   the activity_ids actually seen in task_daily (roughly 30%
+   overall, and 0 for some wells entirely -- e.g. well 33151
+   resolved no WBS at all through it). mapping_master resolves
+   substantially more (roughly 46% overall, 23 distinct WBS
+   values for well 33151) and is confirmed as the current source.
+   New_Activity_Code is the column that feeds activity_master_csv
+   (and therefore WBS / master crew code) below, the same role
+   activity_master_mapping.activity_code played before.
+
+   mapping_master has no equivalent for project_type,
+   composition_code or class_b_ptw (present on the old table).
+   Those three are therefore no longer sourced: they, their
+   distinct-counts and their conflict flags below always resolve
+   to NULL/0 rather than being guessed or backfilled from the
+   old, superseded table. This also means the derived
+   ACTIVITY TYPE classification further below can no longer tell
+   FLOWLINE from LOCATION and always reports UNKNOWN -- it is not
+   read by any Python transformation layer (ui_json.py /
+   ai_evidence.py have no reference to it), so this is a
+   correctly-reported "not recorded", not a loss of a used value.
+   The business-level Location-vs-Flowline distinction the
+   dashboard actually shows comes from project.project_mstr via
+   well_project_ids.sql, which is unaffected by this change.
+
+   mapping_master.Activity_ID is TEXT: CAST to nvarchar to compare
+   against the varchar activity_id extracted from task_code.
    ============================================================ */
 
 ActivityMappingDiagnostic AS
 (
     SELECT
 
-        amm.activity_id,
+        mapped.activity_id,
 
         COUNT(*) AS mapping_row_count,
 
-        COUNT(DISTINCT amm.activity_code)
+        COUNT(DISTINCT mapped.activity_code)
             AS distinct_activity_code_count,
 
-        COUNT(DISTINCT amm.project_type)
-            AS distinct_project_type_count,
-
-        COUNT(DISTINCT amm.composition_code)
-            AS distinct_composition_code_count,
-
-        COUNT(DISTINCT amm.uom)
+        COUNT(DISTINCT mapped.activity_uom)
             AS distinct_uom_count,
 
-        COUNT(DISTINCT amm.norms)
+        COUNT(DISTINCT mapped.norms)
             AS distinct_norms_count,
 
-        COUNT(DISTINCT amm.class_b_ptw)
-            AS distinct_class_b_ptw_count,
-
-        COUNT(DISTINCT amm.rfi)
+        COUNT(DISTINCT mapped.rfi)
             AS distinct_rfi_count
 
-    FROM [AlTasnimBI].[dbo].[activity_master_mapping] AS amm
+    FROM
+    (
+        SELECT
+
+            CAST(mm.Activity_ID AS nvarchar(50)) AS activity_id,
+            mm.New_Activity_Code                 AS activity_code,
+            mm.UOM                                AS activity_uom,
+            mm.Norms                              AS norms,
+            mm.RFI                                AS rfi
+
+        FROM [AlTasnimBI].[dbo].[mapping_master] AS mm
+
+    ) AS mapped
 
     GROUP BY
-        amm.activity_id
+        mapped.activity_id
 ),
 
 
@@ -860,12 +902,14 @@ ActivityMapping AS
         amd.mapping_row_count,
 
         amd.distinct_activity_code_count,
-        amd.distinct_project_type_count,
-        amd.distinct_composition_code_count,
+
+        -- Not sourced from mapping_master (see note above).
+        CAST(NULL AS int) AS distinct_project_type_count,
+        CAST(NULL AS int) AS distinct_composition_code_count,
 
         amd.distinct_uom_count,
         amd.distinct_norms_count,
-        amd.distinct_class_b_ptw_count,
+        CAST(NULL AS int) AS distinct_class_b_ptw_count,
         amd.distinct_rfi_count,
 
 
@@ -876,12 +920,13 @@ ActivityMapping AS
                 THEN
                 (
                     SELECT TOP (1)
-                        amm.activity_code
+                        mm.New_Activity_Code
 
-                    FROM [AlTasnimBI].[dbo].[activity_master_mapping] AS amm
+                    FROM [AlTasnimBI].[dbo].[mapping_master] AS mm
 
-                    WHERE amm.activity_id = amd.activity_id
-                      AND amm.activity_code IS NOT NULL
+                    WHERE CAST(mm.Activity_ID AS nvarchar(50))
+                              = amd.activity_id
+                      AND mm.New_Activity_Code IS NOT NULL
                 )
 
             ELSE NULL
@@ -889,44 +934,10 @@ ActivityMapping AS
         END AS activity_code,
 
 
-        CASE
+        -- Not sourced from mapping_master (see note above).
+        CAST(NULL AS nvarchar(50)) AS project_type,
 
-            WHEN amd.distinct_project_type_count = 1
-
-                THEN
-                (
-                    SELECT TOP (1)
-                        amm.project_type
-
-                    FROM [AlTasnimBI].[dbo].[activity_master_mapping] AS amm
-
-                    WHERE amm.activity_id = amd.activity_id
-                      AND amm.project_type IS NOT NULL
-                )
-
-            ELSE NULL
-
-        END AS project_type,
-
-
-        CASE
-
-            WHEN amd.distinct_composition_code_count = 1
-
-                THEN
-                (
-                    SELECT TOP (1)
-                        amm.composition_code
-
-                    FROM [AlTasnimBI].[dbo].[activity_master_mapping] AS amm
-
-                    WHERE amm.activity_id = amd.activity_id
-                      AND amm.composition_code IS NOT NULL
-                )
-
-            ELSE NULL
-
-        END AS composition_code,
+        CAST(NULL AS nvarchar(50)) AS composition_code,
 
 
         CASE
@@ -936,12 +947,13 @@ ActivityMapping AS
                 THEN
                 (
                     SELECT TOP (1)
-                        amm.uom
+                        mm.UOM
 
-                    FROM [AlTasnimBI].[dbo].[activity_master_mapping] AS amm
+                    FROM [AlTasnimBI].[dbo].[mapping_master] AS mm
 
-                    WHERE amm.activity_id = amd.activity_id
-                      AND amm.uom IS NOT NULL
+                    WHERE CAST(mm.Activity_ID AS nvarchar(50))
+                              = amd.activity_id
+                      AND mm.UOM IS NOT NULL
                 )
 
             ELSE NULL
@@ -956,12 +968,13 @@ ActivityMapping AS
                 THEN
                 (
                     SELECT TOP (1)
-                        amm.norms
+                        mm.Norms
 
-                    FROM [AlTasnimBI].[dbo].[activity_master_mapping] AS amm
+                    FROM [AlTasnimBI].[dbo].[mapping_master] AS mm
 
-                    WHERE amm.activity_id = amd.activity_id
-                      AND amm.norms IS NOT NULL
+                    WHERE CAST(mm.Activity_ID AS nvarchar(50))
+                              = amd.activity_id
+                      AND mm.Norms IS NOT NULL
                 )
 
             ELSE NULL
@@ -969,24 +982,8 @@ ActivityMapping AS
         END AS norms,
 
 
-        CASE
-
-            WHEN amd.distinct_class_b_ptw_count = 1
-
-                THEN
-                (
-                    SELECT TOP (1)
-                        amm.class_b_ptw
-
-                    FROM [AlTasnimBI].[dbo].[activity_master_mapping] AS amm
-
-                    WHERE amm.activity_id = amd.activity_id
-                      AND amm.class_b_ptw IS NOT NULL
-                )
-
-            ELSE NULL
-
-        END AS class_b_ptw,
+        -- Not sourced from mapping_master (see note above).
+        CAST(NULL AS bit) AS class_b_ptw,
 
 
         CASE
@@ -996,12 +993,13 @@ ActivityMapping AS
                 THEN
                 (
                     SELECT TOP (1)
-                        amm.rfi
+                        mm.RFI
 
-                    FROM [AlTasnimBI].[dbo].[activity_master_mapping] AS amm
+                    FROM [AlTasnimBI].[dbo].[mapping_master] AS mm
 
-                    WHERE amm.activity_id = amd.activity_id
-                      AND amm.rfi IS NOT NULL
+                    WHERE CAST(mm.Activity_ID AS nvarchar(50))
+                              = amd.activity_id
+                      AND mm.RFI IS NOT NULL
                 )
 
             ELSE NULL
@@ -2885,8 +2883,10 @@ EnrichedTasks AS
 
     FROM #WellEvidence AS aw
 
+    /* Same varchar/int mismatch as the NormalizedTaskHistory join above
+       -- ta.well_id is inherited from task_daily.well_id (varchar). */
     INNER JOIN TaskActivities AS ta
-        ON ta.well_id = aw.well_id
+        ON TRY_CONVERT(int, ta.well_id) = aw.well_id
 
 
     LEFT JOIN ActivityMapping AS am

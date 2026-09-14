@@ -54,19 +54,28 @@ Never guess a WBS, and never use the activity id as one.
 ```
 task_code                       e.g. 'FLME1180-30356'
 └ text before the FIRST '-'  = activity_id           'FLME1180'
-    → dbo.activity_master_mapping.activity_id
-       → .activity_code                               'FL-ME-ML08-03'
+    → dbo.mapping_master.Activity_ID   (CAST to nvarchar — stored as TEXT)
+       → .New_Activity_Code                           'FL-ME-ML08-03'
           → dbo.activity_master_csv.activity_code
              → .activity_group_description = WBS      'Straightline Welding incl. supports'
              → .crew_code                  = crew     'MWS0602'
 ```
 
+- **`dbo.mapping_master` is the current source, not `dbo.activity_master_mapping`.** The old
+  table is superseded and resolves only a minority of activity_ids seen in `task_daily` (measured
+  ~30% overall, and 0% for some wells entirely). `dbo.mapping_master.New_Activity_Code` is the
+  column that plays `activity_master_mapping.activity_code`'s former role, feeding
+  `activity_master_csv` below. `mapping_master.Activity_ID` is stored as `TEXT`; `CAST` it to
+  `nvarchar` before comparing.
+- `mapping_master` has no equivalent of the old table's `project_type`, `composition_code` or
+  `class_b_ptw` columns. Report those as not recorded — do not backfill them from the old,
+  superseded table.
 - The text before the FIRST '-' is ALWAYS `activity_id`; a task_code may hold more dashes
   (`FLME1180-34516-T02` is still `FLME1180`). Extract it NULL-safely:
   `LEFT(task_code, NULLIF(CHARINDEX('-', task_code), 0) - 1)`
 - `task_code` is an INTERNAL key. Use it ONLY to derive `activity_id`; NEVER display it when
   the question asks about a well's ACTIVITIES — identify an activity by `activity_code`
-  (from `activity_master_mapping`), and list them DISTINCT.
+  (from `mapping_master.New_Activity_Code`), and list them DISTINCT.
 - WBS is ONLY `activity_master_csv.activity_group_description`. Crew is ONLY `.crew_code`.
 - LEFT JOIN both hops whenever unmapped work must stay visible (the WBS shapes below) — an inner
   JOIN drops it silently and makes the unmapped tally read 0. The ACTIVITY LIST is the exception:
@@ -77,11 +86,11 @@ task_code                       e.g. 'FLME1180-30356'
 ```sql
 -- per ACTIVITY  ("what activities does this well have")  -> one row per activity, NO task_code
 --   INNER JOIN here on purpose: an activity with no mapping row is NOT listed.
-SELECT DISTINCT a.activity_id, amm.activity_code
-FROM a JOIN dbo.activity_master_mapping amm ON amm.activity_id = a.activity_id
+SELECT DISTINCT a.activity_id, mm.New_Activity_Code AS activity_code
+FROM a JOIN dbo.mapping_master mm ON CAST(mm.Activity_ID AS nvarchar(50)) = a.activity_id
 
 -- per TASK  (ONLY when the question asks for tasks)  -> one row per task_code
-SELECT a.task_code, a.activity_id, amm.activity_code,
+SELECT a.task_code, a.activity_id, mm.New_Activity_Code AS activity_code,
        amc.activity_group_description AS wbs, amc.crew_code
 
 -- WBS BREAKDOWN  ("which WBS", "tasks per WBS")  -> one row per WBS

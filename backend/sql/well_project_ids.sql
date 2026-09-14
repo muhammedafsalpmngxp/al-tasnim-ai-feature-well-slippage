@@ -36,9 +36,15 @@ WITH WellProjectIds AS
 
     UNION
 
+    /* task_daily.well_id is VARCHAR and carries a handful of non-numeric
+       junk values ('0000F', '0000I', '0000J'). @WellId is INT, so a
+       direct `well_id = @WellId` risks SQL Server implicitly converting
+       the varchar column to int and erroring on those rows. TRY_CONVERT
+       compares as int the same way, but turns an unconvertible row into
+       a non-match instead of an error. */
     SELECT project_id
     FROM [AlTasnimBI].[well].[task_daily]
-    WHERE well_id = @WellId
+    WHERE TRY_CONVERT(int, well_id) = @WellId
       AND project_id IS NOT NULL
 )
 

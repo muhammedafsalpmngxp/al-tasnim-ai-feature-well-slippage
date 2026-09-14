@@ -47,7 +47,13 @@ WITH WellCrews AS
 
     FROM [AlTasnimBI].[well].[task_daily] AS td
 
-    WHERE td.well_id = @WellId
+    /* task_daily.well_id is VARCHAR and carries a handful of non-numeric
+       junk values ('0000F', '0000I', '0000J'). @WellId is INT, so a
+       direct `td.well_id = @WellId` risks SQL Server implicitly
+       converting the varchar column to int and erroring on those rows.
+       TRY_CONVERT compares as int the same way, but turns an
+       unconvertible row into a non-match instead of an error. */
+    WHERE TRY_CONVERT(int, td.well_id) = @WellId
       AND td.crew_id IS NOT NULL
 )
 
