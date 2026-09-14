@@ -22,9 +22,26 @@ def get_slipped_wells(connection):
         encoding="utf-8"
     )
 
-    df = pd.read_sql(
-        query,
-        connection
-    )
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(query)
+
+        if cursor.description is None:
+            raise ValueError(
+                "slipped_wells.sql did not return a result set."
+            )
+
+        columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        df = pd.DataFrame.from_records(
+            cursor.fetchall(),
+            columns=columns,
+        )
+    finally:
+        cursor.close()
 
     return df

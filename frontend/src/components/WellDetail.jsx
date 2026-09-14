@@ -3,7 +3,7 @@ import { formatDate } from "../utils.js";
 function statusTone(status) {
   const key = String(status ?? "").toUpperCase();
 
-  if (["DELAYED", "CRITICAL", "LATE"].includes(key)) return "is-delayed";
+  if (["DELAYED", "CRITICAL", "LATE"].includes(key) || key.includes("SLIPPED")) return "is-delayed";
   if (["AHEAD", "ON_SCHEDULE", "COMPLETED"].includes(key)) return "is-good";
   if (["NOT_YET_DUE", "NO_EXPECTED_DATE"].includes(key)) return "is-neutral";
 
@@ -17,6 +17,32 @@ function delayText(value) {
   return numeric > 0 ? `+${numeric} days` : `${numeric} days`;
 }
 
+function responsibilityFor(well) {
+  const cause = String(well.well_slippage_status ?? "").toUpperCase();
+
+  if (cause === "SLIPPED - PEGGING") {
+    return {
+      label: "Al Tasnim due",
+      detail: "Pegging delay may create penalty exposure for Al Tasnim.",
+      tone: "is-delayed",
+    };
+  }
+
+  if (cause === "SLIPPED - FLAF") {
+    return {
+      label: "Non-due for Al Tasnim",
+      detail: "FLAF is a PDO-originated delay; no Al Tasnim penalty applies.",
+      tone: "is-neutral",
+    };
+  }
+
+  return {
+    label: "Responsibility review required",
+    detail: "This delay cause is outside the pegging and FLAF rules.",
+    tone: "is-neutral",
+  };
+}
+
 export default function WellDetail({ well }) {
   if (!well) {
     return (
@@ -26,9 +52,10 @@ export default function WellDetail({ well }) {
     );
   }
 
-  const summaryStatus =
-    [well.rig_on_status, well.rig_off_status, well.hookup_status].find((status) => status === "DELAYED")
-      ?? "MONITORING";
+  const summaryStatus = well.well_slippage_status
+    ?? [well.rig_on_status, well.rig_off_status, well.hookup_status].find((status) => status === "DELAYED")
+    ?? "MONITORING";
+  const responsibility = responsibilityFor(well);
 
   return (
     <section className="panel detail-panel">
@@ -53,6 +80,27 @@ export default function WellDetail({ well }) {
           <span>Well type</span>
           <strong>{well.well_type_id ?? "—"}</strong>
         </div>
+      </div>
+
+      <div className="date-summary">
+        <div>
+          <span>FLAF date</span>
+          <strong>{formatDate(well.flaf_issue_date)}</strong>
+          <small>PDO milestone</small>
+        </div>
+        <div>
+          <span>Pegging date</span>
+          <strong>{formatDate(well.pegged_date)}</strong>
+          <small>PDO milestone</small>
+        </div>
+      </div>
+
+      <div className={`responsibility-callout ${responsibility.tone}`}>
+        <div>
+          <span className="responsibility-label">Delay responsibility</span>
+          <strong>{responsibility.label}</strong>
+        </div>
+        <p>{responsibility.detail}</p>
       </div>
 
       <div className="milestone-stack">

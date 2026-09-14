@@ -1,276 +1,407 @@
-SELECT
-    wm.well_id,
-    wm.project_id,
-    wm.rig_id,
-    wm.well_type_id,
-    wm.station_id,
+WITH WellMilestones AS
+(
+    SELECT
+        wm.well_id,
+        wm.project_id,
 
-    wm.ex_rig_on_date,
-    wm.rig_on_date,
+        wm.station_id,
+        wm.well_type_id,
 
-    wm.ex_rig_off_date,
-    wm.rig_off_date,
+        wm.ex_rig_on_date,
+        wm.rig_on_date,
 
-    wm.eng_completion_date,
+        wm.ex_rig_off_date,
+        wm.rig_off_date,
+
+        wm.pegged_date,
+        wm.flaf_issue_date,
+
+        wm.eng_completion_date
+
+    FROM [AlTasnimBI].[well].[well_master] AS wm
 
     /* ============================================================
-       RIG-ON STATUS
+       Only wells not yet completed are part of the active
+       slippage investigation.
        ============================================================ */
+
+    WHERE wm.eng_completion_date IS NULL
+)
+
+SELECT
+    wms.well_id,
+    wms.project_id,
+
+    wms.station_id,
+    wms.well_type_id,
+
+    /* ============================================================
+       1. RIG-ON
+       ============================================================ */
+
+    wms.ex_rig_on_date,
+    wms.rig_on_date,
+
     CASE
-        WHEN wm.ex_rig_on_date IS NULL
+        WHEN wms.ex_rig_on_date IS NULL
             THEN 'NO_EXPECTED_DATE'
 
-        WHEN wm.rig_on_date IS NOT NULL
-             AND wm.rig_on_date > wm.ex_rig_on_date
+        WHEN wms.rig_on_date IS NOT NULL
+         AND wms.rig_on_date > wms.ex_rig_on_date
             THEN 'DELAYED'
 
-        WHEN wm.rig_on_date IS NOT NULL
-             AND wm.rig_on_date = wm.ex_rig_on_date
-            THEN 'ON_SCHEDULE'
-
-        WHEN wm.rig_on_date IS NOT NULL
-             AND wm.rig_on_date < wm.ex_rig_on_date
+        WHEN wms.rig_on_date IS NOT NULL
+         AND wms.rig_on_date < wms.ex_rig_on_date
             THEN 'AHEAD'
 
-        WHEN wm.rig_on_date IS NULL
-             AND wm.ex_rig_on_date < CAST(GETDATE() AS DATE)
+        WHEN wms.rig_on_date IS NOT NULL
+            THEN 'ON_SCHEDULE'
+
+        WHEN wms.rig_on_date IS NULL
+         AND CAST(GETDATE() AS DATE) > wms.ex_rig_on_date
             THEN 'DELAYED'
 
-        WHEN wm.rig_on_date IS NULL
-             AND wm.ex_rig_on_date >= CAST(GETDATE() AS DATE)
-            THEN 'NOT_YET_DUE'
+        ELSE 'NOT_YET_DUE'
     END AS rig_on_status,
 
-    /* ============================================================
-       RIG-ON DELAY DAYS
-       ============================================================ */
     CASE
-        WHEN wm.ex_rig_on_date IS NULL
+        WHEN wms.ex_rig_on_date IS NULL
             THEN NULL
 
-        WHEN wm.rig_on_date IS NOT NULL
-            THEN DATEDIFF(
-                    day,
-                    wm.ex_rig_on_date,
-                    wm.rig_on_date
-                 )
+        WHEN wms.rig_on_date IS NOT NULL
+            THEN DATEDIFF(DAY, wms.ex_rig_on_date, wms.rig_on_date)
 
-        WHEN wm.rig_on_date IS NULL
-             AND wm.ex_rig_on_date < CAST(GETDATE() AS DATE)
-            THEN DATEDIFF(
-                    day,
-                    wm.ex_rig_on_date,
-                    CAST(GETDATE() AS DATE)
-                 )
+        WHEN CAST(GETDATE() AS DATE) > wms.ex_rig_on_date
+            THEN DATEDIFF(DAY, wms.ex_rig_on_date, CAST(GETDATE() AS DATE))
 
         ELSE NULL
     END AS rig_on_delay_days,
 
     /* ============================================================
-       RIG-OFF STATUS
+       2. FLAF  (checked before pegging: its deadline is
+          ex_rig_on_date - 90 days, earlier than pegging's -60)
        ============================================================ */
+
+    wms.flaf_issue_date,
+
     CASE
-        WHEN wm.ex_rig_off_date IS NULL
-            THEN 'NO_EXPECTED_DATE'
+        WHEN wms.ex_rig_on_date IS NOT NULL
+            THEN DATEADD(DAY, -90, wms.ex_rig_on_date)
+        ELSE NULL
+    END AS flaf_deadline,
 
-        WHEN wm.rig_off_date IS NOT NULL
-             AND wm.rig_off_date > wm.ex_rig_off_date
-            THEN 'DELAYED'
+    CASE
+        WHEN wms.ex_rig_on_date IS NULL
+            THEN 'DATA_QUALITY_ISSUE'
 
-        WHEN wm.rig_off_date IS NOT NULL
-             AND wm.rig_off_date = wm.ex_rig_off_date
+        WHEN wms.flaf_issue_date IS NULL
+         AND CAST(GETDATE() AS DATE) > DATEADD(DAY, -90, wms.ex_rig_on_date)
+            THEN 'MISSED'
+
+        WHEN wms.flaf_issue_date IS NULL
+            THEN 'PENDING'
+
+        WHEN wms.flaf_issue_date < DATEADD(DAY, -90, wms.ex_rig_on_date)
+            THEN 'AHEAD_OF_SCHEDULE'
+
+        WHEN wms.flaf_issue_date = DATEADD(DAY, -90, wms.ex_rig_on_date)
             THEN 'ON_SCHEDULE'
 
-        WHEN wm.rig_off_date IS NOT NULL
-             AND wm.rig_off_date < wm.ex_rig_off_date
-            THEN 'AHEAD'
+        ELSE 'DELAYED'
+    END AS flaf_status,
 
-        WHEN wm.rig_off_date IS NULL
-             AND wm.ex_rig_off_date < CAST(GETDATE() AS DATE)
-            THEN 'DELAYED'
-
-        WHEN wm.rig_off_date IS NULL
-             AND wm.ex_rig_off_date >= CAST(GETDATE() AS DATE)
-            THEN 'NOT_YET_DUE'
-    END AS rig_off_status,
-
-    /* ============================================================
-       RIG-OFF DELAY DAYS
-       ============================================================ */
     CASE
-        WHEN wm.ex_rig_off_date IS NULL
+        WHEN wms.ex_rig_on_date IS NULL
             THEN NULL
 
-        WHEN wm.rig_off_date IS NOT NULL
-            THEN DATEDIFF(
-                    day,
-                    wm.ex_rig_off_date,
-                    wm.rig_off_date
-                 )
+        WHEN wms.flaf_issue_date IS NOT NULL
+            THEN DATEDIFF(DAY, DATEADD(DAY, -90, wms.ex_rig_on_date), wms.flaf_issue_date)
 
-        WHEN wm.rig_off_date IS NULL
-             AND wm.ex_rig_off_date < CAST(GETDATE() AS DATE)
-            THEN DATEDIFF(
-                    day,
-                    wm.ex_rig_off_date,
-                    CAST(GETDATE() AS DATE)
-                 )
+        WHEN CAST(GETDATE() AS DATE) > DATEADD(DAY, -90, wms.ex_rig_on_date)
+            THEN DATEDIFF(DAY, DATEADD(DAY, -90, wms.ex_rig_on_date), CAST(GETDATE() AS DATE))
+
+        ELSE 0
+    END AS flaf_variance_days,
+
+    /* ============================================================
+       3. PEGGING
+       ============================================================ */
+
+    wms.pegged_date,
+
+    CASE
+        WHEN wms.ex_rig_on_date IS NOT NULL
+            THEN DATEADD(DAY, -60, wms.ex_rig_on_date)
+        ELSE NULL
+    END AS pegging_deadline,
+
+    CASE
+        WHEN wms.ex_rig_on_date IS NULL
+            THEN 'DATA_QUALITY_ISSUE'
+
+        WHEN wms.pegged_date IS NULL
+         AND CAST(GETDATE() AS DATE) > DATEADD(DAY, -60, wms.ex_rig_on_date)
+            THEN 'MISSED'
+
+        WHEN wms.pegged_date IS NULL
+            THEN 'PENDING'
+
+        WHEN wms.pegged_date < DATEADD(DAY, -60, wms.ex_rig_on_date)
+            THEN 'AHEAD_OF_SCHEDULE'
+
+        WHEN wms.pegged_date = DATEADD(DAY, -60, wms.ex_rig_on_date)
+            THEN 'ON_SCHEDULE'
+
+        ELSE 'DELAYED'
+    END AS pegging_status,
+
+    CASE
+        WHEN wms.ex_rig_on_date IS NULL
+            THEN NULL
+
+        WHEN wms.pegged_date IS NOT NULL
+            THEN DATEDIFF(DAY, DATEADD(DAY, -60, wms.ex_rig_on_date), wms.pegged_date)
+
+        WHEN CAST(GETDATE() AS DATE) > DATEADD(DAY, -60, wms.ex_rig_on_date)
+            THEN DATEDIFF(DAY, DATEADD(DAY, -60, wms.ex_rig_on_date), CAST(GETDATE() AS DATE))
+
+        ELSE 0
+    END AS pegging_variance_days,
+
+    /* ============================================================
+       4. RIG-OFF
+       ============================================================ */
+
+    wms.ex_rig_off_date,
+    wms.rig_off_date,
+
+    CASE
+        WHEN wms.ex_rig_off_date IS NULL
+            THEN 'NO_EXPECTED_DATE'
+
+        WHEN wms.rig_off_date IS NOT NULL
+         AND wms.rig_off_date > wms.ex_rig_off_date
+            THEN 'DELAYED'
+
+        WHEN wms.rig_off_date IS NOT NULL
+         AND wms.rig_off_date < wms.ex_rig_off_date
+            THEN 'AHEAD'
+
+        WHEN wms.rig_off_date IS NOT NULL
+            THEN 'ON_SCHEDULE'
+
+        WHEN wms.rig_off_date IS NULL
+         AND CAST(GETDATE() AS DATE) > wms.ex_rig_off_date
+            THEN 'DELAYED'
+
+        ELSE 'NOT_YET_DUE'
+    END AS rig_off_status,
+
+    CASE
+        WHEN wms.ex_rig_off_date IS NULL
+            THEN NULL
+
+        WHEN wms.rig_off_date IS NOT NULL
+            THEN DATEDIFF(DAY, wms.ex_rig_off_date, wms.rig_off_date)
+
+        WHEN CAST(GETDATE() AS DATE) > wms.ex_rig_off_date
+            THEN DATEDIFF(DAY, wms.ex_rig_off_date, CAST(GETDATE() AS DATE))
 
         ELSE NULL
     END AS rig_off_delay_days,
 
     /* ============================================================
-       HOOK-UP DEADLINE
+       5. HOOK-UP
+          Deadline: actual rig-off + 2 days once known, otherwise
+          the planned rig-off + 2 days. Actual takes precedence.
+          eng_completion_date is always NULL here (see WHERE above
+          on WellMilestones), so a "completed" branch is not
+          reachable and is intentionally not included.
        ============================================================ */
+
+    wms.eng_completion_date,
+
     CASE
-        WHEN wm.rig_off_date IS NOT NULL
-            THEN DATEADD(day, 2, wm.rig_off_date)
-
-        WHEN wm.rig_off_date IS NULL
-             AND wm.ex_rig_off_date IS NOT NULL
-            THEN DATEADD(day, 2, wm.ex_rig_off_date)
-
+        WHEN wms.rig_off_date IS NOT NULL
+            THEN DATEADD(DAY, 2, wms.rig_off_date)
+        WHEN wms.ex_rig_off_date IS NOT NULL
+            THEN DATEADD(DAY, 2, wms.ex_rig_off_date)
         ELSE NULL
     END AS hookup_deadline,
 
-    /* ============================================================
-       HOOK-UP / COMPLETION STATUS
-       ============================================================ */
     CASE
-        WHEN wm.eng_completion_date IS NOT NULL
-            THEN 'COMPLETED'
+        WHEN wms.rig_off_date IS NULL AND wms.ex_rig_off_date IS NULL
+            THEN 'NO_EXPECTED_DATE'
 
-        WHEN wm.rig_off_date IS NOT NULL
-             AND DATEADD(day, 2, wm.rig_off_date)
-                 < CAST(GETDATE() AS DATE)
+        WHEN wms.rig_off_date IS NOT NULL
+         AND CAST(GETDATE() AS DATE) > DATEADD(DAY, 2, wms.rig_off_date)
             THEN 'DELAYED'
 
-        WHEN wm.rig_off_date IS NULL
-             AND wm.ex_rig_off_date IS NOT NULL
-             AND DATEADD(day, 2, wm.ex_rig_off_date)
-                 < CAST(GETDATE() AS DATE)
+        WHEN wms.rig_off_date IS NULL
+         AND CAST(GETDATE() AS DATE) > DATEADD(DAY, 2, wms.ex_rig_off_date)
             THEN 'DELAYED'
 
-        WHEN wm.rig_off_date IS NOT NULL
-             AND DATEADD(day, 2, wm.rig_off_date)
-                 >= CAST(GETDATE() AS DATE)
-            THEN 'NOT_YET_DUE'
-
-        WHEN wm.rig_off_date IS NULL
-             AND wm.ex_rig_off_date IS NOT NULL
-             AND DATEADD(day, 2, wm.ex_rig_off_date)
-                 >= CAST(GETDATE() AS DATE)
-            THEN 'NOT_YET_DUE'
-
-        ELSE 'NO_EXPECTED_DATE'
+        ELSE 'NOT_YET_DUE'
     END AS hookup_status,
 
-    /* ============================================================
-       HOOK-UP DELAY DAYS
-       ============================================================ */
     CASE
-        WHEN wm.eng_completion_date IS NOT NULL
+        WHEN wms.rig_off_date IS NULL AND wms.ex_rig_off_date IS NULL
             THEN NULL
 
-        WHEN wm.rig_off_date IS NOT NULL
-             AND DATEADD(day, 2, wm.rig_off_date)
-                 < CAST(GETDATE() AS DATE)
-            THEN DATEDIFF(
-                    day,
-                    DATEADD(day, 2, wm.rig_off_date),
-                    CAST(GETDATE() AS DATE)
-                 )
+        WHEN wms.rig_off_date IS NOT NULL
+         AND CAST(GETDATE() AS DATE) > DATEADD(DAY, 2, wms.rig_off_date)
+            THEN DATEDIFF(DAY, DATEADD(DAY, 2, wms.rig_off_date), CAST(GETDATE() AS DATE))
 
-        WHEN wm.rig_off_date IS NULL
-             AND wm.ex_rig_off_date IS NOT NULL
-             AND DATEADD(day, 2, wm.ex_rig_off_date)
-                 < CAST(GETDATE() AS DATE)
-            THEN DATEDIFF(
-                    day,
-                    DATEADD(day, 2, wm.ex_rig_off_date),
-                    CAST(GETDATE() AS DATE)
-                 )
+        WHEN wms.rig_off_date IS NULL
+         AND CAST(GETDATE() AS DATE) > DATEADD(DAY, 2, wms.ex_rig_off_date)
+            THEN DATEDIFF(DAY, DATEADD(DAY, 2, wms.ex_rig_off_date), CAST(GETDATE() AS DATE))
 
-        ELSE NULL
-    END AS hookup_delay_days
+        ELSE 0
+    END AS hookup_delay_days,
 
-FROM [AlTasnimBI].[well].[well_master] AS wm
+    /* ============================================================
+       WELL SLIPPAGE STATUS
+       Priority order, first match wins:
+         rig-on -> flaf -> pegging -> rig-off -> hook-up
+       Task-level delay is intentionally not checked here.
+       ============================================================ */
+
+    CASE
+
+        WHEN wms.ex_rig_on_date IS NOT NULL
+         AND
+         (
+             (wms.rig_on_date IS NOT NULL AND wms.rig_on_date > wms.ex_rig_on_date)
+             OR
+             (wms.rig_on_date IS NULL AND wms.ex_rig_on_date < CAST(GETDATE() AS DATE))
+         )
+            THEN 'SLIPPED - RIG ON'
+
+        WHEN wms.ex_rig_on_date IS NOT NULL
+         AND
+         (
+             (
+                 wms.flaf_issue_date IS NULL
+                 AND CAST(GETDATE() AS DATE) > DATEADD(DAY, -90, wms.ex_rig_on_date)
+             )
+             OR
+             wms.flaf_issue_date > DATEADD(DAY, -90, wms.ex_rig_on_date)
+         )
+            THEN 'SLIPPED - FLAF'
+
+        WHEN wms.ex_rig_on_date IS NOT NULL
+         AND
+         (
+             (
+                 wms.pegged_date IS NULL
+                 AND CAST(GETDATE() AS DATE) > DATEADD(DAY, -60, wms.ex_rig_on_date)
+             )
+             OR
+             wms.pegged_date > DATEADD(DAY, -60, wms.ex_rig_on_date)
+         )
+            THEN 'SLIPPED - PEGGING'
+
+        WHEN wms.ex_rig_off_date IS NOT NULL
+         AND
+         (
+             (wms.rig_off_date IS NOT NULL AND wms.rig_off_date > wms.ex_rig_off_date)
+             OR
+             (wms.rig_off_date IS NULL AND wms.ex_rig_off_date < CAST(GETDATE() AS DATE))
+         )
+            THEN 'SLIPPED - RIG OFF'
+
+        WHEN
+        (
+            wms.rig_off_date IS NOT NULL
+            AND CAST(GETDATE() AS DATE) > DATEADD(DAY, 2, wms.rig_off_date)
+        )
+        OR
+        (
+            wms.rig_off_date IS NULL
+            AND wms.ex_rig_off_date IS NOT NULL
+            AND CAST(GETDATE() AS DATE) > DATEADD(DAY, 2, wms.ex_rig_off_date)
+        )
+            THEN 'SLIPPED - HOOK-UP'
+
+        ELSE 'NOT SLIPPED'
+
+    END AS well_slippage_status
+
+FROM WellMilestones AS wms
 
 WHERE
-    /* ============================================================
-       FIRST CONDITION:
-       WELL MUST NOT BE COMPLETED
-       ============================================================ */
-    wm.eng_completion_date IS NULL
-
-    AND
-
-    /* ============================================================
-       WELL MUST HAVE AT LEAST ONE DELAYED MILESTONE
-       ============================================================ */
+    /* RIG-ON */
     (
-        /* ---------------------------------------------------------
-           1. RIG-ON DELAY
-           --------------------------------------------------------- */
+        wms.ex_rig_on_date IS NOT NULL
+        AND
         (
-            wm.ex_rig_on_date IS NOT NULL
-            AND
-            (
-                (
-                    wm.rig_on_date IS NOT NULL
-                    AND wm.rig_on_date > wm.ex_rig_on_date
-                )
-                OR
-                (
-                    wm.rig_on_date IS NULL
-                    AND wm.ex_rig_on_date < CAST(GETDATE() AS DATE)
-                )
-            )
-        )
-
-        OR
-
-        /* ---------------------------------------------------------
-           2. RIG-OFF DELAY
-           --------------------------------------------------------- */
-        (
-            wm.ex_rig_off_date IS NOT NULL
-            AND
-            (
-                (
-                    wm.rig_off_date IS NOT NULL
-                    AND wm.rig_off_date > wm.ex_rig_off_date
-                )
-                OR
-                (
-                    wm.rig_off_date IS NULL
-                    AND wm.ex_rig_off_date < CAST(GETDATE() AS DATE)
-                )
-            )
-        )
-
-        OR
-
-        /* ---------------------------------------------------------
-           3. HOOK-UP DELAY
-           --------------------------------------------------------- */
-        (
-            (
-                wm.rig_off_date IS NOT NULL
-                AND DATEADD(day, 2, wm.rig_off_date)
-                    < CAST(GETDATE() AS DATE)
-            )
-
+            (wms.rig_on_date IS NOT NULL AND wms.rig_on_date > wms.ex_rig_on_date)
             OR
+            (wms.rig_on_date IS NULL AND wms.ex_rig_on_date < CAST(GETDATE() AS DATE))
+        )
+    )
 
+    OR
+
+    /* FLAF */
+    (
+        wms.ex_rig_on_date IS NOT NULL
+        AND
+        (
             (
-                wm.rig_off_date IS NULL
-                AND wm.ex_rig_off_date IS NOT NULL
-                AND DATEADD(day, 2, wm.ex_rig_off_date)
-                    < CAST(GETDATE() AS DATE)
+                wms.flaf_issue_date IS NULL
+                AND CAST(GETDATE() AS DATE) > DATEADD(DAY, -90, wms.ex_rig_on_date)
             )
+            OR
+            wms.flaf_issue_date > DATEADD(DAY, -90, wms.ex_rig_on_date)
+        )
+    )
+
+    OR
+
+    /* PEGGING */
+    (
+        wms.ex_rig_on_date IS NOT NULL
+        AND
+        (
+            (
+                wms.pegged_date IS NULL
+                AND CAST(GETDATE() AS DATE) > DATEADD(DAY, -60, wms.ex_rig_on_date)
+            )
+            OR
+            wms.pegged_date > DATEADD(DAY, -60, wms.ex_rig_on_date)
+        )
+    )
+
+    OR
+
+    /* RIG-OFF */
+    (
+        wms.ex_rig_off_date IS NOT NULL
+        AND
+        (
+            (wms.rig_off_date IS NOT NULL AND wms.rig_off_date > wms.ex_rig_off_date)
+            OR
+            (wms.rig_off_date IS NULL AND wms.ex_rig_off_date < CAST(GETDATE() AS DATE))
+        )
+    )
+
+    OR
+
+    /* HOOK-UP */
+    (
+        (
+            wms.rig_off_date IS NOT NULL
+            AND CAST(GETDATE() AS DATE) > DATEADD(DAY, 2, wms.rig_off_date)
+        )
+        OR
+        (
+            wms.rig_off_date IS NULL
+            AND wms.ex_rig_off_date IS NOT NULL
+            AND CAST(GETDATE() AS DATE) > DATEADD(DAY, 2, wms.ex_rig_off_date)
         )
     )
 
 ORDER BY
-    wm.ex_rig_on_date ASC;
+    wms.ex_rig_on_date ASC,
+    wms.well_id ASC;

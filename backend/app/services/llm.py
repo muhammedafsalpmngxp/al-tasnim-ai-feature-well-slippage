@@ -5,15 +5,16 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+BASE_DIR = Path(__file__).resolve().parents[2]
 from app.prompts.prompt import DELAY_ANALYSIS_PROMPT
 
 
-load_dotenv()
+load_dotenv(BASE_DIR / ".env")
 
-BASE_DIR = Path(__file__).resolve().parents[2]
 BUSINESS_RULES_FILE = BASE_DIR / "prompts" / "business_rules.md"
+SLIPPAGE_RULES_FILE = BASE_DIR / "prompts" / "slippage.md"
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("GROK_KEY")
+GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or os.getenv("GROK_KEY") or "").strip()
 GROQ_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 REQUEST_TIMEOUT_SECONDS = 120
 
@@ -23,12 +24,32 @@ class LLMUnavailable(Exception):
 
 
 def build_system_prompt():
-    """Combine the authoritative business rules and analysis instructions."""
-    if not BUSINESS_RULES_FILE.exists():
-        raise LLMUnavailable(f"Business rules file not found: {BUSINESS_RULES_FILE}")
+    """Combine the authoritative rules and task prompt for the LLM."""
+    for rules_file in (BUSINESS_RULES_FILE, SLIPPAGE_RULES_FILE):
+        if not rules_file.exists():
+            raise LLMUnavailable(f"Prompt rules file not found: {rules_file}")
 
     business_rules = BUSINESS_RULES_FILE.read_text(encoding="utf-8")
-    return f"{business_rules}\n\n---\n\n{DELAY_ANALYSIS_PROMPT}"
+    slippage_rules = SLIPPAGE_RULES_FILE.read_text(encoding="utf-8")
+    return f"""You are analysing a well-delay investigation.
+
+Use all source documents below. The business rules and slippage rules define
+the authoritative meaning of dates, milestones, ownership, and consequences.
+The task prompt defines the required analysis and response format. Apply all
+of them to the JSON evidence supplied by the user. Never invent facts that are
+absent from the evidence.
+
+<business_rules>
+{business_rules}
+</business_rules>
+
+<slippage_rules>
+{slippage_rules}
+</slippage_rules>
+
+<analysis_task>
+{DELAY_ANALYSIS_PROMPT}
+</analysis_task>"""
 
 
 def analyze_well_delay(investigation):

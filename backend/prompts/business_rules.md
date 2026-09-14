@@ -17,7 +17,9 @@ Construction**. They are separate — never merge or substitute one for the othe
 
 ## 2. Column dictionary
 
-Every column below is on `well.well_master`. Use these exact names; never a synonym.
+### Well dates — all on `well.well_master`
+
+Use these exact names; never a synonym.
 
 | Business term | Column | Kind |
 |---|---|---|
@@ -32,7 +34,81 @@ Every column below is on `well.well_master`. Use these exact names; never a syno
 `ex_rig_on_date` is the **master date** the whole schedule is measured against: all construction
 must finish in time for the rig to come on the well.
 
-## 3. Milestone deadlines
+### Employee nationality — `ref.employee.nationality_type`
+
+| Value | Meaning |
+|---|---|
+| `'National'` | Omani employee |
+| `'Expat'` | non-Omani employee |
+| `NULL` | not recorded — **not** an Expat |
+
+Exact, case-sensitive strings: no `'Omani'`, `'Local'` or numeric code exists. NULL is a real third
+group, so an Omani-vs-non-Omani answer must report all three or say how many are unrecorded — never
+treat the remainder of a `'National'` count as Expat.
+
+## 3. Task code → activity → WBS → crew
+
+`well.task_daily.task_code` encodes the activity. Resolve it through TWO lookups. Never guess a
+WBS, and never use the activity id as one.
+
+```
+task_code                       e.g. 'FLME1180-30356'
+ └ text before the FIRST '-'  = activity_id           'FLME1180'
+    → dbo.mapping_master.Activity_ID          (CAST to nvarchar — it is a `text` column)
+       → .New_Activity_Code                            'F-M-SLW-GWD-01'
+          → dbo.activity_master_csv.activity_code
+             → .activity_group_description = WBS      'Straightline Welding incl. supports'
+             → .crew_code                  = crew     'YWS-0602'
+```
+
+- The text before the FIRST '-' is ALWAYS `activity_id`; a task_code may hold more dashes
+  (`FLME1180-34516-T02` is still `FLME1180`). Extract it NULL-safely:
+  `LEFT(task_code, NULLIF(CHARINDEX('-', task_code), 0) - 1)`
+- ⚠ `Activity_ID` is a legacy `text` column — comparing it directly FAILS with "the data types
+  text and nvarchar are incompatible". ALWAYS `CAST(m.Activity_ID AS nvarchar(50))`.
+- ⚠ Join on `New_Activity_Code`, NEVER `Old_Activity_Code`. `activity_master_csv` was migrated to
+  the new scheme, and the old column now fails SILENTLY — a NULL WBS, not an error.
+  (Maintainers: this flipped once. If WBS comes back empty everywhere, count how many Old vs New
+  codes match `activity_master_csv.activity_code` using two SEPARATE joins — a single join with
+  `IN (Old, New)` matches on either column then counts both, which reverses the answer. Higher
+  count wins.)
+- `task_code` is an INTERNAL key: use it to derive `activity_id`, and NEVER display it when the
+  question asks about ACTIVITIES. Identify an activity by `New_Activity_Code`, listed DISTINCT.
+- A repeating `activity_id` is CORRECT — one well runs the same activity many times. Never
+  de-duplicate it away; choose the GRAIN the question asks for:
+
+```sql
+-- Second hop, identical in every shape below:
+--   LEFT JOIN dbo.activity_master_csv amc ON amc.activity_code = m.New_Activity_Code
+-- LEFT so unmapped work stays visible and the unmapped tally can be non-zero. The ACTIVITY LIST
+-- is the one exception: it uses an inner JOIN, since an activity with no mapping row is not
+-- a listable activity.
+
+-- per ACTIVITY  ("what activities does this well have")  -> one row per activity, NO task_code
+SELECT DISTINCT a.activity_id, m.New_Activity_Code AS activity_code
+FROM a JOIN dbo.mapping_master m ON CAST(m.Activity_ID AS nvarchar(50)) = a.activity_id
+
+-- per TASK  (ONLY when the question asks for tasks)  -> one row per task_code
+SELECT a.task_code, a.activity_id, m.New_Activity_Code AS activity_code,
+       amc.activity_group_description AS wbs, amc.crew_code
+
+-- WBS BREAKDOWN  ("which WBS", "tasks per WBS")  -> one row per WBS
+SELECT ISNULL(amc.activity_group_description, '(unmapped)') AS wbs,
+       COUNT(DISTINCT a.task_code) AS tasks
+GROUP BY amc.activity_group_description
+
+-- WBS COUNT  ("how many WBS")  -> the number, with the unmapped tally beside it
+SELECT COUNT(DISTINCT amc.activity_group_description) AS wbs_count,
+       COUNT(DISTINCT CASE WHEN amc.activity_group_description IS NULL
+                           THEN a.task_code END)      AS unmapped_tasks
+```
+
+⚠ NEVER `COUNT(DISTINCT ISNULL(activity_group_description, '(unmapped)'))` — "(unmapped)" is not a
+WBS but a task whose WBS is unknown, so it adds a phantom +1: one real well has 21 WBS and 2
+unmapped tasks, and that expression reports 22. Give the two figures separately. Never count the
+per-TASK rows for a per-WBS question either — that same well returns 90 task rows for its 21 WBS.
+
+## 4. Milestone deadlines
 
 Every deadline is derived from a date in §2. For a milestone that **has** an actual date column,
 "missed" = the actual date is later than the deadline, or the actual date is still NULL once the
@@ -66,7 +142,43 @@ not detect a construction delay on a well whose rig has already arrived.
 `ex_rig_off_date + 2 days`. Once `rig_off_date` is populated, the actual deadline is
 `rig_off_date + 2 days`, and **the actual date takes precedence**.
 
-## 4. Delay consequences — ownership matters
+## 5. Schedule variance — being EARLY is not an anomaly
+
+An expected date and an actual date differing is **normal**. A difference is never, on its own, a
+data error, a suspicious value, or an anomaly to flag. Read the **direction**:
+
+| Comparison | Meaning | Report it as |
+|---|---|---|
+| actual **earlier than** expected | the work finished sooner than planned | **ahead of schedule — accelerated.** A GOOD outcome. |
+| actual **equal to** expected | on the planned date | on schedule |
+| actual **later than** expected | the work finished after the planned date | behind schedule — delayed |
+
+This applies to **both** rig dates:
+
+* `rig_on_date` earlier than `ex_rig_on_date` → construction finished early and the rig came on
+  ahead of the master date. The well is **accelerating**, not anomalous.
+* `rig_off_date` earlier than `ex_rig_off_date` → drilling finished early. Again ahead of schedule,
+  not a wrong date.
+
+One signed measure, so the sign always carries the meaning:
+
+```
+schedule_variance_days = DATEDIFF(day, ex_rig_on_date, rig_on_date)
+    negative → AHEAD of schedule (accelerated)
+    zero     → on schedule
+    positive → BEHIND schedule (delayed)
+```
+
+(Use `ex_rig_off_date` / `rig_off_date` for the rig-off variance.)
+
+⚠ NEVER describe an early actual date as a delay, a variance problem, a data-quality issue or an
+anomaly, and never take its absolute value and call it "days of delay". Only a **later** actual
+date is a delay. When a well is early, say so plainly as good news.
+
+This section is about actual-vs-expected variance only. It does not change the milestone deadline
+rules in §4.
+
+## 6. Delay consequences — ownership matters
 
 | Delay | Consequence |
 |---|---|
@@ -75,7 +187,7 @@ not detect a construction delay on a well whose rig has already arrived.
 
 Never report a delay as Al Tasnim's without applying this distinction.
 
-## 5. Lifecycle order
+## 7. Lifecycle order
 
 ```
 PDO issues pegging sheet  → Al Tasnim: Location Construction ┐
@@ -92,7 +204,7 @@ PDO issues FLAF           → Al Tasnim: Flowline Construction ┘
 
 Drilling runs from actual rig-on to actual rig-off and is **PDO's** activity, not Al Tasnim's.
 
-## 6. Well completion
+## 8. Well completion
 
 A well is **completed** when Al Tasnim's hook-up is complete. Therefore
 `eng_completion_date` **is** the well completion date, and:
@@ -103,7 +215,7 @@ completed  ⇔  eng_completion_date IS NOT NULL
 
 A hook-up *deadline* and a *completed well* are different things — do not conflate them.
 
-## 7. Project → WBS → Activity, and PMS weightage
+## 9. Project → WBS → Activity, and PMS weightage
 
 Hierarchy: **Project → WBS / Activity Group → Activities**. Both Location Construction and
 Flowline Construction can have their own WBS/activity structures.
@@ -129,7 +241,7 @@ Weightage rules:
 * **Do not** assume activities in different WBS groups carry the same overall PMS weight — their
   contribution depends on the weight of their parent WBS.
 
-## 8. Never interchange these pairs
+## 10. Never interchange these pairs
 
 | | vs | |
 |---|---|---|
@@ -143,15 +255,15 @@ Weightage rules:
 
 `ex_rig_off_date` is a planning figure. Never report it as the actual rig-off date.
 
-## 9. Not yet defined
+## 11. Not yet defined
 
 Answer what you can and state plainly that the rule is undefined — never invent one:
 
 * Whether Location Construction and Flowline Construction have an **actual completion date**
   anywhere. No column is approved as that date, so never substitute one to fill the gap —
-  on-time/missed is judged by the rig rule in §3 instead.
+  on-time/missed is judged by the rig rule in §4 instead.
 
-## 10. Strict instructions
+## 12. Strict instructions
 
 * These rules are authoritative for every question about PDO, Al Tasnim, wells, Location
   Construction, Flowline Construction, pegging, FLAF, rig-on, rig-off, hook-up, well completion,
