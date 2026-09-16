@@ -1,0 +1,1130 @@
+/* ---------------------------------------------------------------------------
+   Daily Morning Brief - operational dashboard styling.
+   A high-contrast control-room surface, in dark (default) or light, with
+   every status colour carrying a label as well as a hue.
+
+   Theme switching: `useTheme` (hooks/useTheme.js) sets data-theme="dark" or
+   "light" on <html>. Dark is the default look and lives on bare :root so the
+   page still renders correctly before JS runs or if it never does; the light
+   block below only overrides tokens, never introduces a new one, so every
+   component using var(--x) works unchanged in both themes.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --bg: #0d1117;
+  --bg-raised: #151b23;
+  --bg-card: #1a222c;
+  --bg-hover: #212b36;
+  --border: #2a3440;
+  --border-strong: #3a4756;
+
+  --text: #e6edf3;
+  --text-muted: #96a3b2;
+  --text-dim: #6b7a8c;
+
+  --accent: #4a9eff;
+  --accent-dim: #1f4d80;
+  --accent-contrast: #eaf3ff;
+  --accent-dim-hover: #24598f;
+
+  --on-plan: #3fb950;
+  --on-plan-bg: rgba(63, 185, 80, 0.13);
+  --below-plan: #e3a008;
+  --below-plan-bg: rgba(227, 160, 8, 0.13);
+  --above-plan: #58a6ff;
+  --above-plan-bg: rgba(88, 166, 255, 0.13);
+  --no-actual: #8b949e;
+  --no-actual-bg: rgba(139, 148, 158, 0.13);
+  --not-validated: #bc8cff;
+  --not-validated-bg: rgba(188, 140, 255, 0.13);
+  --danger: #f85149;
+  --danger-bg: rgba(248, 81, 73, 0.12);
+  --num: #22d3ee;
+
+  --radius: 8px;
+  --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f6f9;
+  --bg-raised: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: #eef2f7;
+  --border: #dde3ea;
+  --border-strong: #c3ccd6;
+
+  --text: #16202a;
+  --text-muted: #4c5866;
+  --text-dim: #7c8794;
+
+  --accent: #1a63c4;
+  --accent-dim: #1a63c4;
+  --accent-contrast: #ffffff;
+  --accent-dim-hover: #144e9c;
+
+  --on-plan: #1a8a3d;
+  --on-plan-bg: rgba(26, 138, 61, 0.1);
+  --below-plan: #a86400;
+  --below-plan-bg: rgba(168, 100, 0, 0.1);
+  --above-plan: #1a63c4;
+  --above-plan-bg: rgba(26, 99, 196, 0.1);
+  --no-actual: #5c6773;
+  --no-actual-bg: rgba(92, 103, 115, 0.1);
+  --not-validated: #7a3fd6;
+  --not-validated-bg: rgba(122, 63, 214, 0.1);
+  --danger: #c4291a;
+  --danger-bg: rgba(196, 41, 26, 0.09);
+  --num: #0e7490;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* ---- layout -------------------------------------------------------------- */
+
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app__main {
+  flex: 1;
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 20px 24px 64px;
+}
+
+/* ---- header -------------------------------------------------------------- */
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+
+.header__inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 14px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.header__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.header__subtitle {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.header__spacer {
+  flex: 1;
+}
+
+.header__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.date-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+
+.date-field label {
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.date-field input,
+.date-field select {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  outline: none;
+  /* No color-scheme override here: the native date/select popup follows the
+     root's color-scheme (set per theme above), so it matches light or dark. */
+}
+
+.date-field select {
+  max-width: 210px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 7px 14px;
+  font-size: 13px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  text-decoration: none;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent-dim);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--accent-dim-hover);
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+  padding: 5px 8px;
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* ---- theme toggle ---------------------------------------------------------- */
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 5px 12px 5px 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.theme-toggle:hover {
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+.theme-toggle__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-hover);
+}
+
+/* ---- status strip -------------------------------------------------------- */
+
+.statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: center;
+  padding: 8px 24px;
+  max-width: 1440px;
+  margin: 0 auto;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.statusbar__dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.statusbar__dot--ok {
+  background: var(--on-plan);
+}
+
+.statusbar__dot--bad {
+  background: var(--danger);
+}
+
+.statusbar__dot--idle {
+  background: var(--text-dim);
+}
+
+/* ---- breadcrumbs --------------------------------------------------------- */
+
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+
+.breadcrumbs__sep {
+  color: var(--text-dim);
+  padding: 0 2px;
+}
+
+.breadcrumbs__crumb {
+  background: none;
+  border: none;
+  padding: 3px 6px;
+  border-radius: 5px;
+  color: var(--accent);
+}
+
+.breadcrumbs__crumb:hover {
+  background: var(--bg-hover);
+}
+
+.breadcrumbs__crumb--current {
+  color: var(--text);
+  cursor: default;
+  font-weight: 600;
+}
+
+.breadcrumbs__crumb--current:hover {
+  background: none;
+}
+
+/* ---- day strip ------------------------------------------------------------
+   The whole day in one line: tasks today, upcoming milestones, overdue. This
+   replaces the earlier grid of per-status stat tiles plus a separate
+   milestone banner -- both true summaries, but together they pushed the well
+   list below the fold and repeated detail each well row already carries. */
+
+.day-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 22px;
+  margin-bottom: 18px;
+  padding: 13px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13.5px;
+}
+
+.day-strip__item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+}
+
+.day-strip__item b {
+  font-size: 17px;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+  color: var(--num);
+}
+
+.day-strip__item--link {
+  cursor: pointer;
+}
+
+.day-strip__item--link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.day-strip__item--upcoming b {
+  color: var(--below-plan);
+}
+
+.day-strip__item--overdue b {
+  color: var(--danger);
+}
+
+/* ---- well list -------------------------------------------------------------
+   The main dashboard view: one compact row per live well, main points only.
+   A well's full detail is always one click away; nothing here is a dead end,
+   and nothing here is a total -- every figure still comes straight from the
+   backend's per-well rollup. */
+
+.well-list__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.well-list__search {
+  flex: 1;
+  max-width: 260px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 11px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.well-list__search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.well-list__count {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.well-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.well-row {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 6px 4px 16px;
+}
+
+.well-row__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.well-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  background: none;
+  border: none;
+  padding: 11px 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.well-row__main:hover .well-row__id {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.well-row__id {
+  font-weight: 650;
+  font-size: 13.5px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.well-row__work {
+  flex: 1;
+  min-width: 160px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.well-row__work-extra {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+.well-row__figure {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.well-row__statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.well-row__ai-toggle {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+/* ---- status pill --------------------------------------------------------- */
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 560;
+  line-height: 1.3;
+  transition: filter 0.12s ease, transform 0.08s ease;
+}
+
+.status-pill:hover:not(:disabled) {
+  filter: brightness(1.28);
+}
+
+.status-pill:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.status-pill:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.status-pill__count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.status-pill--small {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.status-pill--ON_PLAN {
+  color: var(--on-plan);
+  background: var(--on-plan-bg);
+  border-color: var(--on-plan);
+}
+
+.status-pill--BELOW_PLAN {
+  color: var(--below-plan);
+  background: var(--below-plan-bg);
+  border-color: var(--below-plan);
+}
+
+.status-pill--ABOVE_PLAN {
+  color: var(--above-plan);
+  background: var(--above-plan-bg);
+  border-color: var(--above-plan);
+}
+
+.status-pill--NO_ACTUAL {
+  color: var(--no-actual);
+  background: var(--no-actual-bg);
+  border-color: var(--no-actual);
+}
+
+.status-pill--NOT_VALIDATED {
+  color: var(--not-validated);
+  background: var(--not-validated-bg);
+  border-color: var(--not-validated);
+}
+
+/* ---- tables -------------------------------------------------------------- */
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table.data th,
+table.data td {
+  text-align: left;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+table.data th {
+  background: var(--bg-raised);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+  font-weight: 620;
+  position: sticky;
+  top: 0;
+}
+
+table.data tbody tr:last-child td {
+  border-bottom: none;
+}
+
+table.data tbody tr.clickable:hover {
+  background: var(--bg-hover);
+  cursor: pointer;
+}
+
+td.num,
+th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+td.wrap {
+  white-space: normal;
+  min-width: 220px;
+}
+
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.missing {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* Any numeric figure -- a quantity, a count -- carries this colour throughout
+   the app, so a reported value is visually distinct from labels and prose at
+   a glance. Table headers keep their own (higher-specificity) muted colour
+   even though they share the .num class for right-alignment. */
+.num {
+  color: var(--num);
+  font-variant-numeric: tabular-nums;
+  font-weight: 640;
+}
+
+/* ---- planned / actual / progress, always shown as one grouped unit ------- */
+
+.qty-trio {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin: 4px 0 2px;
+  padding: 10px 13px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.qty-trio__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.qty-trio__label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+}
+
+.qty-trio__value {
+  font-size: 13.5px;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 14px;
+  font-size: 12.5px;
+}
+
+.kv dt {
+  color: var(--text-dim);
+}
+
+.kv dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- well detail --------------------------------------------------------- */
+
+.detail-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 17px 18px;
+  margin-bottom: 14px;
+}
+
+.detail-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 13px;
+}
+
+.detail-panel__title {
+  margin: 0;
+  font-size: 15.5px;
+  font-weight: 640;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 11px 22px;
+}
+
+.field {
+  min-width: 0;
+}
+
+.field__label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+
+.field__value {
+  font-size: 13.5px;
+  word-break: break-word;
+}
+
+.field__value--mono {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+/* ---- explain panel ------------------------------------------------------- */
+
+.explain {
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+
+/* Colour tells the "generated just now, or reused" story instead of a
+   "cached" text label: green for a fresh call to the LLM, red for an
+   earlier answer reused because nothing about this selection has changed.
+   A tinted left rail plus a matching border keeps the tone visible without
+   recolouring the prose itself. */
+.explain--fresh {
+  border-color: var(--on-plan);
+  background: var(--on-plan-bg);
+  border-left-width: 4px;
+}
+
+.explain--cached {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  border-left-width: 4px;
+}
+
+.explain__head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.explain__title {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-muted);
+}
+
+.explain__body {
+  margin-top: 13px;
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+
+.explain__body p + p {
+  margin-top: 10px;
+}
+
+.explain__body strong {
+  color: var(--text);
+}
+
+/* A value the model copied verbatim from the evidence (well ID, task code,
+   quantity, unit, date, status) -- backtick-wrapped per SYSTEM_INSTRUCTION.
+   Coloured the same as every other database-sourced number in the app
+   (`--num`, via `Num`/`.num`), plus italics, so it reads apart from the
+   model's own sentence around it without a second colour meaning. */
+.explain__value {
+  color: var(--num);
+  font-style: italic;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- messages ------------------------------------------------------------ */
+
+.notice {
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  margin-bottom: 16px;
+  font-size: 13.5px;
+}
+
+.notice--error {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.notice--warn {
+  border-color: var(--below-plan);
+  background: var(--below-plan-bg);
+}
+
+.notice__title {
+  font-weight: 640;
+  margin-bottom: 5px;
+}
+
+.notice__body {
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.empty {
+  text-align: center;
+  padding: 52px 20px;
+  color: var(--text-muted);
+}
+
+.empty__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 7px;
+}
+
+.spinner {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -3px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-block {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 44px 20px;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-hover) 50%, var(--bg-card) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: var(--radius);
+  height: 108px;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* ---- data quality -------------------------------------------------------- */
+
+.dq {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--below-plan);
+  border-radius: var(--radius);
+  padding: 12px 15px;
+  margin-bottom: 20px;
+}
+
+.dq__title {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--below-plan);
+  font-weight: 640;
+  margin-bottom: 7px;
+}
+
+.dq__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 16px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.dq__item b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.dq__note {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.flag-chip {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--below-plan-bg);
+  color: var(--below-plan);
+  border: 1px solid var(--below-plan);
+  margin-right: 4px;
+}
+
+/* ---- the dedicated milestones page (reached by selecting the summary) ---- */
+
+.milestones-page__intro {
+  color: var(--text-muted);
+  margin-top: 0;
+  font-size: 13px;
+}
+
+.milestone-banner__empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.milestone-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.milestone-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.milestone-row--overdue {
+  border-color: var(--danger);
+}
+
+.milestone-row__summary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: none;
+  border: none;
+  padding: 9px 12px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+
+.milestone-row__well {
+  font-weight: 640;
+  font-variant-numeric: tabular-nums;
+}
+
+.milestone-row__label {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  flex: 1;
+}
+
+.milestone-row__days {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--below-plan);
+}
+
+.milestone-row__days--overdue {
+  color: var(--danger);
+}
+
+.milestone-row__chevron {
+  color: var(--text-dim);
+}
+
+.milestone-row__detail {
+  padding: 4px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.milestone-banner__overdue {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.milestone-banner__overdue-toggle {
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+.milestone-list--overdue {
+  margin-top: 8px;
+}
+
+.milestone-list__more {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  padding: 4px 2px;
+}
+
+/* ---- crew personnel (task -> crew -> supervisor -> employees) ------------- */
+
+.crew-chain {
+  margin-top: 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 15px;
+}
+
+.crew-chain__title {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-dim);
+  font-weight: 640;
+  margin-bottom: 7px;
+}
+
+.crew-chain__path {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.crew-chain__well,
+.crew-chain__supervisor {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.crew-chain__sep {
+  color: var(--text-dim);
+}
+
+.crew-chain__employees {
+  margin: 0;
+  padding-left: 18px;
+}
+
+@media (max-width: 700px) {
+  .app__main {
+    padding: 16px 13px 48px;
+  }
+
+  .header__inner {
+    padding: 12px 13px;
+  }
+
+  .well-list__toolbar {
+    flex-wrap: wrap;
+  }
+
+  .well-row__line {
+    flex-wrap: wrap;
+  }
+
+  .milestone-row__summary {
+    flex-wrap: wrap;
+  }
+}
