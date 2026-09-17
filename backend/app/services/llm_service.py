@@ -123,7 +123,105 @@ Two to four short paragraphs is normal; a single \
 paragraph is fine for a small scope. Use conservative wording: say "the \
 reported actual quantity is below the planned quantity", never "the crew \
 underperformed". Never convert between units of measure. Keep the response \
-under 220 words."""
+under 220 words.
+
+When the evidence includes a "crew_suggestion" object, it is deterministic \
+evidence about this one task only -- calculated entirely by SQL/Python, \
+never by you. It is advisory only: never describe it as an assignment, a \
+reassignment, or something that has happened. Never say a crew "will be" or \
+"has been" put on the task.
+
+Everywhere below, never write the name of a JSON field or an internal status \
+code as if it were a phrase in your own sentence -- not "eligible", \
+"ineligible", "crew_suggestion", "suggested_crew", "consult_crew", \
+"suppression_reason", "the suppression reason states...", "no_suggestion_reason", \
+or anything of that shape. These are internal field names for carrying data \
+between programs, not words a person would say out loud; writing one \
+describes the evidence structure instead of the task. Always restate what a \
+field says in plain prose instead of naming the field itself.
+
+If crew_suggestion.eligible is false and there is no consult_crew field \
+either, write your explanation exactly as you would if the word \
+"crew_suggestion" never appeared anywhere in the evidence. Do not write any \
+sentence about a crew suggestion, an alternative crew, or crew availability \
+-- including a sentence that says one is not needed, not provided, or not \
+applicable. Silence on the topic is correct; a sentence explaining its \
+absence is not. This happens whenever the task is already completed, or \
+already shows recorded progress with no crew to point to -- a routine case \
+that needs no comment.
+
+If crew_suggestion.eligible is true but suggested_crew is null, do not \
+invent a crew. Say plainly, in your own words, that no suitable alternative \
+crew was identified from the available records, using no_suggestion_reason \
+if it is present.
+
+If suggested_crew is present, weave it naturally into the same explanation \
+-- do not present it as a separate feature or a separate paragraph header. \
+Explain why that crew is being surfaced using only the supplied fields: how \
+many times it has completed this same activity (historical_completed_task_count), \
+on how many distinct wells (distinct_completed_well_count), its typical \
+(median) completion time (typical_completion_days) and, where useful, its \
+average (average_completion_days) -- these are two different figures and \
+must never be conflated or called by the other's name. If \
+completed_on_incomplete_well_count is greater than zero, mention that some of \
+that history comes from wells that were not themselves complete, so the \
+evidence reflects finishing this activity, not finishing the whole well. \
+derived_availability of NO_CURRENT_UNFINISHED_TASK means only that no current \
+unfinished task was found for that crew in the available records -- never \
+call this "available" or "free" without that qualification, and never claim \
+physical or workforce availability. evidence_strength describes how much \
+history backs the suggestion (say so only if it adds something, never as a \
+raw label). Never rank or compare crews yourself -- exactly one crew is ever \
+supplied, and it is already the top-ranked one. suggested_crew is only ever \
+supplied for a task that is stalled or has not yet started moving -- never \
+say this task "is progressing normally", "is going smoothly", or "does not \
+need a change": that framing belongs only to consult_crew below, on a \
+different kind of task, and would contradict the evidence here. Conclude \
+this crew's mention as a possible alternative for the task itself -- e.g. \
+"may be worth considering as an alternative crew for this task" -- never as \
+something to consult for feedback or information, which is consult_crew's \
+framing, not this one.
+
+If consult_crew is present instead of suggested_crew, the task is already \
+progressing normally -- no change is needed. Refer to the crew the ordinary \
+way you would refer to any other crew in this evidence: by its crew type \
+and/or supervisor name when given, or by its crew id only if nothing else is \
+available -- exactly as you would for suggested_crew or current_crew, never \
+by naming the field it came from.
+
+Say, in plain natural words, that the task is going smoothly and another \
+crew is not necessary right now, then add -- as a small, friendly aside, not \
+a warning -- that if any feedback or information is ever needed about this \
+activity, that crew has handled this same work before (using its own \
+historical_completed_task_count / distinct_completed_well_count / \
+typical_completion_days the same way you would for suggested_crew) and could \
+be worth asking. Never call this a suggestion, a recommendation, or an \
+alternative crew -- it is only a "here is who has done this before, in case \
+you want their input" mention on an otherwise fine task. The same rules as \
+suggested_crew apply to what you may claim: never call derived_availability \
+"available" without qualification, never invent a reason beyond the supplied \
+fields, and never rank or compare crews. A good shape for this, adapted in \
+your own words and grounded in the actual crew type/supervisor given, is: \
+"the task is going smoothly, so another crew is not necessary, but if any \
+feedback or information is needed on this activity, the crew that previously \
+completed this work could be worth asking."
+
+current_crew tells you what is already recorded on the task. If \
+current_crew.recorded is false, say the crew is not recorded or associated \
+with this task record -- never say "no crew was assigned", which claims more \
+than the evidence supports. Never criticise, blame, or judge the performance \
+of the current crew; the current task simply taking longer than the \
+historical pattern is not evidence of fault.
+
+Respect the report date. For a past report date, describe the crew evidence \
+in the past tense, as what was already known BY that date -- e.g. "Crew X had \
+already completed..." or "could have been considered as an alternative at \
+that time" -- never as if it were being decided today. Never use evidence \
+timestamped after the selected report date; the evidence you were given is \
+already limited to what existed by then, so simply describe it as of that \
+date. Never claim a crew "would definitely have finished faster" or "would \
+have solved the delay" -- say only that it could have been considered, based \
+on the evidence available then."""
 
 #: Endpoint used when LLM_BASE_URL is not set. Both providers speak the
 #: OpenAI-compatible chat completions protocol.
@@ -161,7 +259,42 @@ class LLMUnavailable(RuntimeError):
 #: a prompt improvement takes effect on the very next request instead of
 #: being masked by an answer generated under the old prompt, with no need to
 #: find and clear the persisted cache file by hand.
-_PROMPT_VERSION = 2
+#:
+#: v3: added the crew-suggestion system-instruction rules. A task-scope
+#: evidence payload now sometimes carries a "crew_suggestion" key (see
+#: app/services/crew_suggestion_service.py) that a v2-cached explanation was
+#: never told how to read.
+#: v4: tightened the ineligible-suggestion rule -- a v3 explanation could
+#: still name "crew suggestion" as suppressed for a progressing task instead
+#: of omitting it entirely.
+#: v5: tightened further -- a v4 explanation still added a sentence saying no
+#: alternative crew was suggested; the rule now says silence, not an
+#: explained absence.
+#: v6: added the consult_crew rule -- an in-progress task with a historically
+#: proven crew now gets a brief, non-replacement "worth asking for feedback"
+#: mention instead of pure silence, so the feature stays visible even when a
+#: switch is not warranted. A v5-cached explanation for such a task never
+#: learned this framing.
+#: v7: tightened the consult_crew rule -- a v6 explanation named internal
+#: field/status words ("ineligible", "consult crew", "crew suggestion was
+#: generated") instead of describing the task in plain, natural language.
+#: v8: tightened again -- a v7 explanation still said "identified in the
+#: consult crew section, `10028`" instead of referring to the crew by its
+#: type/supervisor the same way it already does for suggested_crew.
+#: v9: fixed a real regression -- a v8 explanation for a genuinely stalled
+#: task (suggested_crew present) borrowed consult_crew's "progressing
+#: normally, no change needed" framing, directly contradicting its own
+#: evidence (NO_ACTUAL, no crew recorded). The two framings are now
+#: explicitly told apart.
+#: v10: the field-name-leak rule ("eligible", "suppression_reason", etc.) is
+#: now stated once, up front, covering every branch -- a v9 explanation for
+#: an in-progress task still wrote "as indicated by the suppression reason
+#: stating that the task is currently being worked on".
+#: v11: a v10 explanation for a genuinely stalled task (suggested_crew) used
+#: consult_crew's "worth consulting for feedback" framing instead of
+#: presenting the crew as a possible alternative for the task itself --
+#: suggested_crew now has its own explicit closing template.
+_PROMPT_VERSION = 11
 
 
 def _evidence_hash(evidence: Dict[str, Any]) -> str:

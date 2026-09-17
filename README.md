@@ -106,9 +106,9 @@ cd backend
 python -m pytest
 ```
 
-116 tests. The deterministic tests run offline; the tests in `tests/test_live_wells_db.py`
-and `tests/test_wells_live_db.py` run against SQL Server and skip themselves when it is
-unreachable.
+194 tests. The deterministic tests run offline; the tests in `tests/test_live_wells_db.py`,
+`tests/test_wells_live_db.py` and `tests/test_crew_suggestion_live_db.py` run against SQL
+Server and skip themselves when it is unreachable.
 
 ---
 
@@ -131,14 +131,16 @@ project-root/
 │   ├── app/
 │   │   ├── main.py              FastAPI app, request logging, error handling
 │   │   ├── api/                 routes + shared dependencies
-│   │   ├── services/            all business processing
-│   │   ├── repositories/        all database access
-│   │   ├── schemas/             API request/response contracts
+│   │   ├── services/            all business processing (incl. crew_suggestion_service.py)
+│   │   ├── repositories/        all database access (incl. crew_repository.py)
+│   │   ├── schemas/             API request/response contracts (incl. crew_suggestion.py)
 │   │   ├── models/              internal domain objects
 │   │   ├── config/              settings + read-only database access
 │   │   └── utils/               SQL loader, logging
-│   ├── sql/                     daily_tasks · daily_detail · daily_summary · well_milestones
-│   └── tests/
+│   ├── sql/                     daily_tasks · daily_detail · daily_summary · well_milestones ·
+│   │                             crew_suggestion (§18)
+│   └── tests/                   incl. test_crew_suggestion.py, test_crew_suggestion_wiring.py,
+│                                 test_crew_suggestion_live_db.py
 └── frontend/
     ├── package.json
     ├── vite.config.js
@@ -355,7 +357,7 @@ folded into a quantity:
 | `GET /api/daily/well/{well_id}?date=` | Every task one well ran that day |
 | `GET /api/daily/dates?limit=` | Recent dates that carry daily entries |
 | `GET /api/daily/export?date=` | `daily_morning_brief_YYYY-MM-DD.xlsx` |
-| `POST /api/daily/explain` | Evidence + LLM explanation for a named scope |
+| `POST /api/daily/explain` | Evidence + LLM explanation for a named scope. For `scope="task"`, the evidence and explanation also fold in an advisory crew suggestion when the task qualifies — see §18. |
 | `GET /api/daily/milestones?window_days=` | Live wells approaching (or past) a pegging/FLAF/rig-on/rig-off deadline — see §15 |
 
 The date defaults to the current date and is always bound as a parameter. An empty string
@@ -892,8 +894,24 @@ two separate widgets stacked on top of each other. Selecting either milestone fi
 into `MilestonesPage`, a dedicated level in the same `current.type` drill-down state that
 `DailyMorningBrief.jsx` already uses for well/task, reached via the normal breadcrumb/back
 navigation. That page lists `upcoming` openly and `overdue` behind a collapsed toggle;
-clicking any alert expands the well's full set of lifecycle dates in place, with a link into
-that well's daily tasks for the currently selected report date.
+clicking any alert expands the well's full set of lifecycle dates in place.
+
+A milestone alert used to also offer a "View well's daily tasks →" link out of that expanded
+detail. It was removed: a milestone is evaluated against **today**, independent of whatever
+report date the Daily Morning Brief happens to be showing (§ above), so that link opened the
+well's daily-task detail for the *currently selected* report date — which, for the wells this
+list surfaces, very often has no daily task rows at all, surfacing as a 404/error instead of
+the "in place" detail it was meant to be. Rather than resolve that mismatch by guessing at a
+more appropriate date, the link (and the `onSelectWell` prop it depended on, in
+`MilestonesPage.jsx`/`MilestoneRow`) was simply removed; the expanded lifecycle-date detail
+already shown in place is what this page is for, and a well's own daily tasks are always one
+click away from the main dashboard for whichever date the operator actually wants.
+
+Milestone labels never repeat the PDO/Al Tasnim scope split that governs which organisation is
+responsible for a deadline (`business_rules.md` §2/§3): `MILESTONE_LABELS`
+(`app/models/wells.py`) reads "Pegging sheet", "FLAF", "Rig-on", "Rig-off" — plainly, with no
+organisation name attached. That split is an internal accountability rule, not something an
+operator reading a deadline list needs restated on every row.
 
 The underlying `well.well_master` scan is cached with the same TTL discipline as the daily
 dataset (`DAILY_CACHE_TTL_SECONDS`), so repeated banner/page loads do not repeat the full scan.
@@ -925,3 +943,106 @@ component:
   upcoming/overdue amber/red): a plain count or quantity gets the generic numeric colour, and
   a value that already carries a status/urgency meaning keeps that colour instead — the status
   pill on a well row, for instance, keeps its status colour rather than switching to teal.
+
+---
+
+## 18. Crew suggestion in task AI summary
+
+An **extension of the existing task-specific AI summary — not a separate feature.** There is
+no "Suggest Crew" button, no crew-suggestion page or modal, and no second API call. When an
+operator opens the same "Explain this task" panel they already use today
+(`WellDetail.jsx` → `TaskDetailPanel` → `ExplainPanel`, `POST /api/daily/explain` with
+`scope="task"`), the returned explanation naturally folds in a crew suggestion whenever the
+selected task qualifies for one. Full rule set: `backend/daily_report_rules.md`, "Crew
+suggestion" section.
+
+**Where it appears.** Inside the same evidence payload and the same LLM call the task summary
+already makes. `app/api/routes_explain.py` calls `CrewSuggestionService.build()` only when the
+request resolves to exactly one task (`scope == "task"` and exactly one task matched), merges
+the result under `evidence["crew_suggestion"]`, and hands the combined evidence to the same
+`LLMService` / `gpt-4o-mini` this application already uses for every explanation. Nothing about
+the frontend changed to make this appear — the same request the panel already sends is enough.
+
+**Why it exists.** A task can sit open far longer than the historical pattern for its activity
+while the crew currently on it is simply busy, unrecorded, or otherwise not making progress.
+This surfaces a data-backed, advisory alternative at the exact moment an operator is already
+asking "what's going on with this task?", instead of requiring a second tool or a manual query.
+
+**Task-level historical evidence, and why an incomplete historical well still counts.** A crew
+is credited with proving an activity by completing that specific task
+(`task_daily.completed = 1`) — the historical well it did that work on does **not** need to be
+complete overall. A crew that finished its wiring task on an otherwise-still-open well has
+still demonstrably completed that activity; requiring the whole historical well to be finished
+first would throw away most of the real evidence this system has. `sql/crew_suggestion.sql`
+never filters historical rows by `well_master.eng_completion_date`.
+
+**Progress suppression — and a deliberate exception for it.** A task already showing recorded
+progress, or already marked `completed`, is never offered a *replacement* suggestion —
+`crew_suggestion_eligible` is decided in SQL, never by the model. `progress` is used only as a
+`> 0` signal here, exactly as everywhere else in this application (§9): never rendered as a
+percentage.
+
+A **completed** task gets nothing further; the summary simply continues describing it normally,
+with no crew mention at all. A task that is merely **in progress**, however, still gets the
+same ranked historical crew attached when one exists — surfaced as `consult_crew` rather than
+`suggested_crew` — so the AI summary can say, in effect, "the task is going smoothly, so
+another crew is not necessary right now, but if any feedback or information is ever needed
+about this activity, the crew that previously completed similar work could be worth asking."
+This exists specifically so the feature stays visible even on a task that needs no change,
+rather than going silent every single time nothing is wrong. `suggested_crew` and
+`consult_crew` are mutually exclusive and use deliberately different closing language in the
+system instruction, so a stalled task is never described as "going smoothly" and a healthy one
+is never described as needing "an alternative crew." When an in-progress task has no historical
+crew to point to at all, the summary stays silent, exactly like a completed task.
+
+**Derived availability — a V1 signal, not a workforce status.** There is no availability table
+in this system. A crew is excluded as a candidate only when its own latest logical task state
+(the same `PARTITION BY well_id, schedule_id, task_code ORDER BY ActionOn DESC, updated_at DESC,
+id DESC` grain §4 already uses everywhere) shows an unfinished task on a still-incomplete well.
+`NO_CURRENT_UNFINISHED_TASK` is reported exactly that way — never as "available" — and
+`ref.employee.emp_status` (an employee attribute, not a crew one) is never read by this feature.
+Availability is a hard filter applied before ranking, never a ranking score.
+
+**Historical date awareness.** Every historical fact — completion counts, durations, the most
+recent success date — is limited to `ActionOn <= report_date`. Opening an old, still-pending
+task from months ago is explained using only what the record already showed by that date; a
+crew's later, real success is never used to suggest it could have been picked earlier than the
+evidence at the time actually supported.
+
+**Advisory only.** Nothing in this feature writes to the database. `sql/crew_suggestion.sql` is
+a single `SELECT`, validated by the same `assert_read_only` guard as every other query in this
+project, and `CrewRepository` exposes no write path. A suggested crew is never described as an
+assignment or a reassignment — the system instruction states this explicitly, and, because a
+prompt rule alone cannot *guarantee* a non-deterministic model's wording, whenever there is
+truly nothing to narrate (a completed task, or an in-progress task with no historical crew to
+point to) the `crew_suggestion` evidence is withheld from the LLM call entirely (see
+`routes_explain.py`) so there is structurally nothing for the model to narrate, rather than
+relying on it to stay silent. When there *is* something worth saying — a replacement candidate,
+or an in-progress task's `consult_crew` — the evidence does reach the model, and the system
+instruction gives each of the two cases its own closing language so they are never confused.
+
+**SQL/Python calculates; `gpt-4o-mini` only explains.** Eligibility, historical statistics,
+availability and the fixed, deterministic ranking (most completions → most distinct wells →
+closest-to-typical duration → most recent success → `crew_id` tie-break) are computed entirely
+in `sql/crew_suggestion.sql` and `app/services/crew_suggestion_service.py`. The configured model
+is `LLM_PROVIDER=openai` / `LLM_MODEL=gpt-4o-mini` — the same configuration and the same
+`LLMService` every other explanation on this dashboard already uses; no second LLM integration
+was introduced. "Typical" always means the median duration, "average" always the mean, and the
+two are never conflated.
+
+**No hardcoded identifiers, anywhere.** `sql/crew_suggestion.sql` takes exactly three
+parameters — `well_id`, `task_code`, `report_date` — and resolves the activity, WBS and
+historical evidence dynamically through the same `mapping_master` → `activity_master_csv` chain
+as §7/daily_report_rules.md §2, for any target task.
+
+Verified end-to-end against the live database while building this: an eligible, unfinished,
+non-progressing task returned a suggested crew with a full evidence trail (historical count,
+distinct wells, median/mean duration, most recent success, derived availability) woven directly
+into the task's existing AI summary paragraph, closing with "may be worth considering as an
+alternative crew for this task"; a task already showing recorded progress returned a summary
+that said the task was going smoothly and no alternative crew was necessary, then added, as a
+brief aside, that the crew which previously completed similar work could be worth consulting
+for feedback — its `evidence.crew_suggestion` carried `eligible: false` with a suppression
+reason for transparency, and a populated `consult_crew`; a completed task's summary made no
+crew mention of any kind; and an old report date's evidence was confirmed to stop at that
+date's own historical cutoff rather than reflecting a crew's later success.

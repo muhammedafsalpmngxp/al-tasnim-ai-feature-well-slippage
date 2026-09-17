@@ -9,7 +9,7 @@ import { Field, LoadingBlock, ErrorState } from '../common'
  * the overdue backlog runs far larger than the upcoming list and would
  * otherwise bury it.
  */
-export default function MilestonesPage({ resource, onSelectWell }) {
+export default function MilestonesPage({ resource }) {
   const [showOverdue, setShowOverdue] = useState(false)
   const [openKey, setOpenKey] = useState(null)
 
@@ -36,7 +36,6 @@ export default function MilestonesPage({ resource, onSelectWell }) {
               alert={alert}
               isOpen={openKey === rowKey(alert)}
               onToggle={() => setOpenKey((k) => (k === rowKey(alert) ? null : rowKey(alert)))}
-              onSelectWell={onSelectWell}
             />
           ))}
         </ul>
@@ -60,7 +59,6 @@ export default function MilestonesPage({ resource, onSelectWell }) {
                   alert={alert}
                   isOpen={openKey === rowKey(alert)}
                   onToggle={() => setOpenKey((k) => (k === rowKey(alert) ? null : rowKey(alert)))}
-                  onSelectWell={onSelectWell}
                 />
               ))}
               {overdue.length < overdueCount ? (
@@ -89,7 +87,7 @@ function daysText(alert) {
   return `in ${alert.days_remaining} day${alert.days_remaining === 1 ? '' : 's'}`
 }
 
-function MilestoneRow({ alert, isOpen, onToggle, onSelectWell }) {
+function MilestoneRow({ alert, isOpen, onToggle }) {
   return (
     <li className={`milestone-row${alert.overdue ? ' milestone-row--overdue' : ''}`}>
       <button type="button" className="milestone-row__summary" onClick={onToggle} aria-expanded={isOpen}>
@@ -114,11 +112,6 @@ function MilestoneRow({ alert, isOpen, onToggle, onSelectWell }) {
             <Field label="Expected rig-off" value={alert.ex_rig_off_date} missingText="Not recorded" />
             <Field label="Actual rig-off" value={alert.rig_off_date} missingText="Not yet off" />
           </div>
-          {onSelectWell ? (
-            <button type="button" className="btn" onClick={() => onSelectWell(alert.well_id)}>
-              View well's daily tasks →
-            </button>
-          ) : null}
         </div>
       ) : null}
     </li>

@@ -29,11 +29,14 @@ class MilestoneType(str, Enum):
 
 
 #: Human labels. The code above stays authoritative; this is display-only.
+#: No organisation name (PDO/Al Tasnim) is shown here -- business_rules.md's
+#: scope/responsibility split is an internal rule, not something this
+#: operator-facing label needs to repeat.
 MILESTONE_LABELS = {
-    MilestoneType.PEGGING: "Pegging sheet (PDO)",
-    MilestoneType.FLAF: "FLAF (PDO)",
-    MilestoneType.RIG_ON: "Rig-on (PDO)",
-    MilestoneType.RIG_OFF: "Rig-off (PDO)",
+    MilestoneType.PEGGING: "Pegging sheet",
+    MilestoneType.FLAF: "FLAF",
+    MilestoneType.RIG_ON: "Rig-on",
+    MilestoneType.RIG_OFF: "Rig-off",
 }
 
 

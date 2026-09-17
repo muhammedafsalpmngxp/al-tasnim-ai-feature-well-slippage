@@ -132,7 +132,7 @@ export default function DailyMorningBrief() {
         {!current ? (
           <SummaryLevel resource={wellsForDay} reportDate={reportDate} onSelectWell={openWell} />
         ) : current.type === 'milestones' ? (
-          <MilestonesPage resource={milestones} onSelectWell={openWell} />
+          <MilestonesPage resource={milestones} />
         ) : (
           <WellLevel step={current} reportDate={reportDate} />
         )}

@@ -14,6 +14,7 @@ from fastapi import HTTPException, Query, status
 
 from app.config.database import DatabaseUnavailable
 from app.models.daily import DailyDataset
+from app.services.crew_suggestion_service import CrewSuggestionService
 from app.services.daily_service import DailyService
 from app.services.evidence_service import EvidenceService
 from app.services.export_service import ExportService
@@ -27,6 +28,7 @@ _export_service = ExportService(_grouping_service)
 _evidence_service = EvidenceService(_grouping_service)
 _llm_service = LLMService()
 _milestone_service = MilestoneService()
+_crew_suggestion_service = CrewSuggestionService()
 
 
 def get_daily_service() -> DailyService:
@@ -51,6 +53,10 @@ def get_llm_service() -> LLMService:
 
 def get_milestone_service() -> MilestoneService:
     return _milestone_service
+
+
+def get_crew_suggestion_service() -> CrewSuggestionService:
+    return _crew_suggestion_service
 
 
 def parse_report_date(

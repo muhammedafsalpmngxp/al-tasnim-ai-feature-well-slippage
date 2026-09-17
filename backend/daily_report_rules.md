@@ -256,7 +256,115 @@ Answer what you can and state plainly that the rule is undefined — never inven
 (A well's or a construction phase's *actual completion date* is a well-lifecycle question,
 not a daily-report one — see `business_rules.md` for that.)
 
-## 8. Strict instructions
+## 8. Crew suggestion
+
+An advisory extension of the existing task-specific AI summary — never a separate feature.
+Nothing below changes what the summary endpoint is, only what it can additionally say when
+the selected task qualifies. Rules marked **V1 derived** are this feature's own presentation
+choices, not an authoritative workforce rule from anywhere else in this system.
+
+1. **No new surface.** A crew suggestion appears only inside the existing task-specific AI
+   summary (`scope="task"` with exactly one resolved task on `/api/daily/explain`). There is
+   no "Suggest Crew" button, no crew-suggestion page or modal, and no second request — the
+   frontend calls the same endpoint it already calls today.
+2. **Advisory only.** A suggestion is evidence for a person to weigh, nothing more. It is
+   never described as an assignment or a reassignment, and no database write occurs anywhere
+   in this feature — see `sql/crew_suggestion.sql` and `app/repositories/crew_repository.py`,
+   both pure `SELECT`s validated by the same read-only guard as every other query.
+3. **Task/activity-specific.** The suggestion is scored against the ONE resolved activity of
+   the ONE target task (`well_id`, `task_code`, `report_date`), resolved dynamically through
+   the same `task_code → activity_id → mapping_master → activity_master_csv` chain as §2 —
+   never a hardcoded well, task, activity or crew.
+4. **Historical success is task-level.** A crew has proven an activity by completing that
+   specific task (`task_daily.completed = 1`) on another well — **the historical well itself
+   need not be completed.** A crew that finished a task on a well that is otherwise still
+   incomplete is still valid evidence for that activity. Historical evidence is never filtered
+   by `well_master.eng_completion_date IS NOT NULL`.
+5. **Historical evidence respects the report date.** Only historical completions with
+   `ActionOn <= report_date` count. An old, pending task is never explained using a crew's
+   later success the record-keeping did not yet know about at that date — the same report-date
+   discipline this file already applies everywhere else.
+6. **A task already progressing is not eligible for a *replacement* suggestion.** Decided in
+   SQL, never by the LLM: `crew_suggestion_eligible = 0` when the target task's latest logical
+   state (as of `report_date`) has `completed = 1`, or has `progress IS NOT NULL AND progress
+   > 0`. A machine-checkable `crew_suggestion_suppression_code` (`NULL` / `IN_PROGRESS` /
+   `COMPLETED`) travels alongside the human-readable `crew_suggestion_suppression_reason`, so
+   the service branches on the code, never on the sentence text.
+
+   A **completed** task (`COMPLETED`) gets nothing further — no replacement, no informational
+   mention; there is nothing left to add once a task is done. A task that is merely
+   **in progress** (`IN_PROGRESS`) still gets the same ranked historical crew attached, when one
+   exists, but framed only as an informational aside — "this crew has relevant experience with
+   this activity and could be worth asking for feedback or information" — never as a
+   replacement, an assignment, or advice to change anything. This exists so the feature stays
+   visible even on a task that needs no change, rather than going silent every time nothing is
+   wrong. When no historical crew exists at all for an in-progress task, the summary continues
+   with no crew mention of any kind, exactly as it would for a completed task.
+7. **`task_daily.progress` is never a percentage here either.** It is used only as a
+   `> 0` / not `> 0` signal to decide eligibility — never rendered, multiplied, or described as
+   a degree of completion, per §7 above.
+8. **Typical vs average duration.** "Typical" always means the **median** historical
+   duration (`PERCENTILE_CONT(0.5)`); "average" always means the **arithmetic mean**. The two
+   are never conflated or labelled with each other's name. Duration is
+   `DATEDIFF(DAY, actual_start, actual_end)` for historical rows where both dates exist —
+   no other definition of duration is used.
+9. **Crew availability is a derived V1 signal, not an authoritative workforce status.** There
+   is no availability/status table in this system. A crew is treated as busy only when its own
+   latest logical task state (same `PARTITION BY well_id, schedule_id, task_code ORDER BY
+   ActionOn DESC, updated_at DESC, id DESC` grain as everywhere else raw snapshots are
+   resolved) shows `completed = 0 AND actual_end IS NULL` on a still-incomplete well. Multiple
+   daily snapshots of the same task are never counted as multiple busy tasks. `NO_CURRENT_
+   UNFINISHED_TASK` means exactly that — no current unfinished task was found in the available
+   records — and must never be reported as "available" or "free" without that qualification.
+   `ref.employee.emp_status` is employee status, not crew availability, and is never read by
+   this feature.
+10. **Busy crews are excluded, not penalised.** Availability is a hard filter applied before
+    ranking, never a ranking score.
+11. **Ranking is fixed and deterministic (V1 rule), never an ML score.** Among available
+    candidates with at least one historical completion: most same-activity completions first,
+    then most distinct completed wells, then closest-to-typical (lowest) median duration, then
+    most recent success, then `crew_id` as the final tie-break.
+12. **Evidence strength** is a plain, fixed bucketing of the historical completed-task count:
+    `>= 5` → `STRONG_HISTORY`, `2–4` → `LIMITED_HISTORY`, `1` → `SINGLE_HISTORY`, `0` →
+    `NO_HISTORY`. Only crews with at least one completed historical record are ever suggested.
+13. **Every suggested crew carries its own "why".** The evidence always includes the
+    historical completed-task count, distinct-well count, completion-on-incomplete-well count,
+    typical/average/shortest/longest duration, most recent success date, evidence strength and
+    derived availability — the LLM explains only these supplied facts, never a reason of its
+    own invention.
+14. **The current crew, if `NULL`, is reported exactly as that.** `task_daily.crew_id IS NULL`
+    is reported as "crew is not recorded/associated with this task record" — never as "no crew
+    was assigned," which would claim more than a missing value proves.
+15. **No blame, ever.** The current crew is never described as bad, slow, or at fault. A task
+    running longer than the historical pattern is stated as a fact about the pattern, never as
+    a judgement of the crew already on the task — consistent with §7's "accountability /
+    crew performance: not recorded" rule.
+16. **SQL/Python decides; the LLM only narrates.** Eligibility, historical statistics,
+    availability and ranking are all computed in `sql/crew_suggestion.sql` and
+    `app/services/crew_suggestion_service.py`. The LLM (`gpt-4o-mini`, via the same
+    `LLM_PROVIDER`/`LLM_MODEL` configuration and system instruction as every other
+    explanation) never calculates a duration, never invents a cause, and never assigns a crew
+    of its own choosing.
+17. **Evidence with nothing to say never reaches the model.** A system-instruction rule
+    cannot by itself guarantee a non-deterministic model stays silent when there is truly
+    nothing to add, so `app/api/routes_explain.py` withholds the `crew_suggestion` evidence
+    from the LLM call entirely whenever it carries none of `suggested_crew`, `consult_crew` or
+    `no_suggestion_reason` — a completed task, or an in-progress task with no historical crew to
+    point to. It has nothing to narrate in that case. The full evidence, including the
+    suppression reason, still reaches the client in the response for transparency and audit;
+    only the model's own input is narrowed. An in-progress task that *does* have a historical
+    crew to point to (`consult_crew`) is deliberately **not** withheld — see §6/#16 below — so
+    the feature's existence stays visible even when nothing needs to change.
+18. **Never say the task is "progressing normally" for a replacement suggestion, and never
+    call a replacement suggestion "worth consulting for feedback."** `suggested_crew` (a
+    replacement candidate) and `consult_crew` (an informational, in-progress mention) use
+    deliberately different closing language, enforced in the system instruction, so the two
+    cases — a stalled task and a healthy one — are never described with each other's framing.
+19. **No hardcoded business values.** `well_id`, `task_code` and `report_date` are the only
+    parameters `sql/crew_suggestion.sql` takes; no well, project, WBS, activity, task or crew
+    identifier is ever hardcoded anywhere in this feature.
+
+## 9. Strict instructions
 
 * These rules are authoritative for every question about a daily task's quantity status,
   UOM, activity/WBS/crew mapping, or data quality.
