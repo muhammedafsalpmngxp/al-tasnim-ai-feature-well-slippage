@@ -4,6 +4,9 @@ __pycache__/
 *.py[cod]
 backend/app/responses/*.json
 database_inventory.txt
+backend/schema/
+backend/app/database/active_db.json
+backend/sql/backups/
 .claude/
 gcm-diagnose.log
 node_modules/

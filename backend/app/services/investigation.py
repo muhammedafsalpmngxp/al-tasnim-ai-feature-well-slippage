@@ -1,8 +1,12 @@
 from pathlib import Path
 import json
+import logging
 import math
 import re
 from tempfile import NamedTemporaryFile
+
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -183,6 +187,8 @@ def build_investigation_response(
     well = {
         "well_id": first.get("well_id", well_id),
         "project_id": first.get("project_id"),
+        "project_code": first.get("project_code"),
+        "project_name": first.get("project_name"),
 
         "ex_rig_on_date": first.get("ex_rig_on_date"),
         "rig_on_date": first.get("rig_on_date"),
@@ -340,6 +346,12 @@ def build_investigation_response(
                 "crew_type_id": record.get(
                     "crew_type_id"
                 ),
+                "crew_type_code": record.get(
+                    "crew_type_code"
+                ),
+                "crew_type_name": record.get(
+                    "crew_type_name"
+                ),
                 "crew_id": record.get(
                     "crew_id"
                 ),
@@ -420,8 +432,8 @@ def update_investigation_json(
         JSON_FILE
     )
 
-    print(
-        f"Investigation JSON updated: {JSON_FILE}"
+    logger.info(
+        "Investigation JSON updated: %s", JSON_FILE
     )
 
     return response

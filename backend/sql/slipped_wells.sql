@@ -18,7 +18,7 @@ WITH WellMilestones AS
 
         wm.eng_completion_date
 
-    FROM [AlTasnimBI].[well].[well_master] AS wm
+    FROM [well].[well_master] AS wm
 
     /* ============================================================
        Only wells not yet completed are part of the active

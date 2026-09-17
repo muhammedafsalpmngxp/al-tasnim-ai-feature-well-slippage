@@ -1,8 +1,11 @@
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException
 
 from app.database.connection import get_connection
+
+from app.services.console_log import log_stage
 
 from app.services.investigation import (
     get_investigation_data,
@@ -72,9 +75,18 @@ def investigate_well(
         # EXECUTE INVESTIGATION SQL
         # ----------------------------------------------------
 
+        query_started_at = time.monotonic()
+
         records = get_investigation_data(
             connection,
             well_id
+        )
+
+        log_stage(
+            "Investigation",
+            f"exec ok [well {well_id}]: {len(records)} task row(s) in "
+            f"{time.monotonic() - query_started_at:.2f}s",
+            ok=True,
         )
 
 

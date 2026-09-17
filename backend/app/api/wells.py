@@ -1,5 +1,6 @@
 import math
 import logging
+import time
 
 import pandas as pd
 
@@ -9,6 +10,8 @@ from fastapi import HTTPException
 from app.database.connection import (
     get_connection
 )
+
+from app.services.console_log import log_stage
 
 from app.services.slipped_wells import (
     get_slipped_wells
@@ -71,8 +74,16 @@ def slipped_wells():
 
         connection = get_connection()
 
+        query_started_at = time.monotonic()
+
         df = get_slipped_wells(
             connection
+        )
+
+        log_stage(
+            "Wells",
+            f"exec ok: {len(df)} slipped well(s) in {time.monotonic() - query_started_at:.2f}s",
+            ok=True,
         )
 
         records = []
@@ -91,9 +102,19 @@ def slipped_wells():
                 clean_row
             )
 
+        calc_started_at = time.monotonic()
+
         calculations = calculate_well_metrics(
             connection,
             records,
+        )
+
+        log_stage(
+            "Calculation",
+            f"ok: total={calculations['total_wells']} live={calculations['live_wells']} "
+            f"slipped={calculations['slipped_wells']} in "
+            f"{time.monotonic() - calc_started_at:.2f}s",
+            ok=True,
         )
 
         return {

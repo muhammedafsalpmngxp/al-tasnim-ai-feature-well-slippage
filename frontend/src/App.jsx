@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
-import { getSlippedWells } from "./api.js";
+import { getSlippedWells, refreshSchema } from "./api.js";
 import KpiCards from "./components/KpiCards.jsx";
 import WellsTable from "./components/WellsTable.jsx";
 import WellDetail from "./components/WellDetail.jsx";
 import InvestigationPanel from "./components/InvestigationPanel.jsx";
+import DbSettingsPanel from "./components/DbSettingsPanel.jsx";
+import SqlRegenerationSummary from "./components/SqlRegenerationSummary.jsx";
 
 export default function App() {
   const [pageState, setPageState] = useState({ status: "loading" });
   const [wells, setWells] = useState([]);
   const [calculations, setCalculations] = useState(null);
   const [selectedWellId, setSelectedWellId] = useState(null);
+  const [showDbSettings, setShowDbSettings] = useState(false);
+  const [schemaRefreshState, setSchemaRefreshState] = useState({ status: "idle" });
 
   useEffect(() => {
     let cancelled = false;
@@ -44,6 +48,24 @@ export default function App() {
   }, []);
 
   const selectedWell = wells.find((well) => Number(well.well_id) === Number(selectedWellId)) ?? wells[0] ?? null;
+  const isRefreshingSchema = schemaRefreshState.status === "loading";
+
+  async function handleRefreshSchema() {
+    setSchemaRefreshState({ status: "loading" });
+    try {
+      const result = await refreshSchema();
+      setSchemaRefreshState({
+        status: "success",
+        database: result.database,
+        tables: result.tables,
+        columns: result.columns,
+        hintTables: result.hint_tables ?? 0,
+        sqlRegeneration: result.sql_regeneration ?? null,
+      });
+    } catch (err) {
+      setSchemaRefreshState({ status: "error", message: err.message || "Unable to refresh the schema." });
+    }
+  }
 
   return (
     <div className="page">
@@ -55,10 +77,43 @@ export default function App() {
             <h1>Well Slippage Dashboard</h1>
           </div>
         </div>
-        <div className="live-status"><span className="status-dot" />Live schedule watch</div>
+        <div className="topbar-actions">
+          <button type="button" className="btn-settings" onClick={handleRefreshSchema} disabled={isRefreshingSchema}>
+            {isRefreshingSchema ? "⟳ Refreshing..." : "⟳ Refresh Schema"}
+          </button>
+          <button type="button" className="btn-settings" onClick={() => setShowDbSettings((current) => !current)}>
+            ⚙ Database
+          </button>
+          <div className="live-status"><span className="status-dot" />Live schedule watch</div>
+        </div>
       </header>
 
       <main>
+        {showDbSettings && <DbSettingsPanel onClose={() => setShowDbSettings(false)} />}
+
+        {schemaRefreshState.status === "loading" && (
+          <div className="banner warning">
+            Reading the database structure and rebuilding the schema and hint files —
+            this can take a few minutes.
+          </div>
+        )}
+        {schemaRefreshState.status === "success" && (
+          <div className="banner success is-dismissible">
+            <span>
+              Schema refreshed for {schemaRefreshState.database}: {schemaRefreshState.tables} tables,
+              {" "}{schemaRefreshState.columns} columns, {schemaRefreshState.hintTables} lookup tables with value hints.
+              <SqlRegenerationSummary sqlRegeneration={schemaRefreshState.sqlRegeneration} />
+            </span>
+            <button type="button" className="btn-close" onClick={() => setSchemaRefreshState({ status: "idle" })} aria-label="Dismiss">✕</button>
+          </div>
+        )}
+        {schemaRefreshState.status === "error" && (
+          <div className="banner error is-dismissible">
+            <span>{schemaRefreshState.message}</span>
+            <button type="button" className="btn-close" onClick={() => setSchemaRefreshState({ status: "idle" })} aria-label="Dismiss">✕</button>
+          </div>
+        )}
+
         <div className="page-intro">
           <div>
             <p className="eyebrow accent">Asset performance</p>

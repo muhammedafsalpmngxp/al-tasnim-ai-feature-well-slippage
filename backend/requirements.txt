@@ -1,6 +1,8 @@
 fastapi
+langgraph
 pandas
 pyodbc
 python-dotenv
 requests
+rich
 uvicorn[standard]

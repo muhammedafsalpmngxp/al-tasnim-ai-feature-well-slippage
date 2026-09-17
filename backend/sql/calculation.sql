@@ -7,4 +7,4 @@ SELECT
             ELSE 0
         END
     ) AS live_wells
-FROM [AlTasnimBI].[well].[well_master];
+FROM [well].[well_master];

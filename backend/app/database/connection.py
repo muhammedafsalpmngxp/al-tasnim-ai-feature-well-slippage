@@ -1,4 +1,7 @@
 import os
+import json
+
+from pathlib import Path
 
 import pyodbc
 
@@ -8,10 +11,40 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+ACTIVE_DB_FILE = Path(__file__).resolve().parent / "active_db.json"
+
+
+def get_active_db_name():
+    """Return the DB name to connect to: a UI-set override if present, else .env."""
+
+    if ACTIVE_DB_FILE.exists():
+
+        try:
+            data = json.loads(ACTIVE_DB_FILE.read_text(encoding="utf-8"))
+            name = data.get("db_name")
+
+            if name:
+                return name
+
+        except (OSError, ValueError):
+            pass
+
+    return os.getenv("DB_NAME")
+
+
+def set_active_db_name(db_name):
+    """Persist a UI-selected DB name so future connections use it."""
+
+    ACTIVE_DB_FILE.write_text(
+        json.dumps({"db_name": db_name}),
+        encoding="utf-8"
+    )
+
+
 def get_connection():
 
     server = os.getenv("DB_SERVER")
-    database = os.getenv("DB_NAME")
+    database = get_active_db_name()
     username = os.getenv("DB_USER")
     password = os.getenv("DB_PASSWORD")
     driver = os.getenv(

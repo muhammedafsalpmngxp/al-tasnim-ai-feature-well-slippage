@@ -28,6 +28,15 @@ button, input { font: inherit; }
 .topbar .eyebrow { color: #aebcb5; }
 .eyebrow.accent { color: var(--amber-dark); }
 .live-status { color: #bfcec7; font-size: .76rem; letter-spacing: .03em; white-space: nowrap; }
+.topbar-actions { display: flex; align-items: center; gap: 16px; }
+.btn-settings { padding: 8px 14px; color: #f6f7f1; background: transparent; border: 1px solid rgba(246, 247, 241, .35); cursor: pointer; font-size: .78rem; letter-spacing: .02em; }
+.btn-settings:hover { border-color: var(--amber); color: var(--amber); }
+.btn-close { padding: 4px 8px; color: var(--muted); background: transparent; border: 0; cursor: pointer; font-size: .9rem; }
+.btn-close:hover { color: var(--ink); }
+.db-settings-panel { margin-bottom: 28px; }
+.sql-regen-line { display: block; margin-top: 4px; }
+.sql-regen-line.sql-regen-success { color: var(--green); }
+.sql-regen-line.sql-regen-warning { color: var(--red); font-weight: 700; }
 .status-dot { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px rgba(231, 167, 45, .14); }
 main { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 48px 0 70px; }
 .page-intro { display: flex; justify-content: space-between; align-items: end; gap: 32px; margin-bottom: 30px; }
@@ -130,6 +139,8 @@ tbody tr:hover { background: #fffbf0; }
 .analysis-content li { margin: 8px 0; padding-left: 4px; }
 .analysis-content li::marker { color: var(--amber-dark); font-weight: 800; }
 .banner { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); font-size: .8rem; line-height: 1.5; }
+.banner.is-dismissible { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.banner.is-dismissible .btn-close { flex-shrink: 0; margin-top: -4px; }
 .banner.warning { color: var(--amber-dark); background: #fff8e7; border-color: #f0d18a; }
 .banner.success { color: var(--green); background: #edf8f2; border-color: #b9dfca; }
 .banner.error { color: var(--red); background: #fff0ec; border-color: #e8b6ac; }

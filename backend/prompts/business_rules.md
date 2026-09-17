@@ -4,6 +4,12 @@ Authoritative business interpretation. Follow it exactly. Do not infer, modify, 
 definition. If a question needs a rule that is not stated below, say the rule is **not yet
 defined** — do not assume one.
 
+The rules are stated in business terms, so they stay true when the data model changes. The
+worked SQL examples show how they are applied against the CURRENT database — they are
+illustrations, not a schema definition. Where an example names something the schema you
+were given does not contain, the schema wins: keep the rule, find the new source, and
+treat the example as out of date.
+
 ## 1. Parties and scope
 
 | Term | Meaning |
@@ -15,48 +21,56 @@ defined** — do not assume one.
 Each well has **two construction projects**: **Location Construction** and **Flowline
 Construction**. They are separate — never merge or substitute one for the other.
 
-## 2. Column dictionary
+## 2. The key dates
 
-### Well dates — all on `well.well_master`
+Every rule below is built from these. Each is either an **expected** date (a plan, which can
+be revised) or an **actual** date (something that happened). Never substitute one kind for
+the other.
 
-Use these exact names; never a synonym.
-
-| Business term | Column | Kind |
-|---|---|---|
-| Expected / master rig-on date | `ex_rig_on_date` | expected |
-| Actual rig-on date | `rig_on_date` | actual |
-| Expected / predicted rig-off date | `ex_rig_off_date` | expected |
-| Actual rig-off date | `rig_off_date` | actual |
-| Pegging sheet date | `pegged_date` | actual |
-| FLAF date | `flaf_issue_date` | actual |
-| Hook-up completion = **well completion date** | `eng_completion_date` | actual |
-
-`ex_rig_on_date` is the **master date** the whole schedule is measured against: all construction
-must finish in time for the rig to come on the well.
-
-### Employee nationality — `ref.employee.nationality_type`
-
-| Value | Meaning |
+| Business term | Kind |
 |---|---|
-| `'National'` | Omani employee |
-| `'Expat'` | non-Omani employee |
-| `NULL` | not recorded — **not** an Expat |
+| Expected / master rig-on date | expected |
+| Actual rig-on date | actual |
+| Expected / predicted rig-off date | expected |
+| Actual rig-off date | actual |
+| Pegging sheet date | actual |
+| FLAF date | actual |
+| Hook-up completion = **well completion date** | actual |
 
-Exact, case-sensitive strings: no `'Omani'`, `'Local'` or numeric code exists. NULL is a real third
-group, so an Omani-vs-non-Omani answer must report all three or say how many are unrecorded — never
-treat the remainder of a `'National'` count as Expat.
+The **expected rig-on date is the master date** the whole schedule is measured against: all
+construction must finish in time for the rig to come on the well.
 
-## 3. Task code → activity → WBS → crew
+### Employee nationality
 
-`well.task_daily.task_code` encodes the activity. Resolve it through TWO lookups. Never guess a
-WBS, and never use the activity id as one.
+| Category | Meaning |
+|---|---|
+| National | Omani employee |
+| Expat | non-Omani employee |
+| not recorded | unknown — **not** an Expat |
+
+Three groups, not two. "Not recorded" is a real third group, so an Omani-vs-non-Omani
+answer must report all three or say how many are unrecorded. Never treat the remainder of a
+National count as Expat.
+
+## 3. Task → activity → WBS → crew
+
+A task's code encodes the activity that task belongs to. Resolving a task to its WBS takes
+**two hops**, and both are lookups. Never guess a WBS, and never use the activity id as one.
+
+The two lookups are referred to below by their role, aliased `m` and `amc` in the examples:
+
+- **activity mapping** (`m`) — activity id → activity code, and the owning crew code
+- **activity description** (`amc`) — activity code → WBS description and crew
+
+`<activity mapping>` and `<activity description>` in the SQL below are placeholders. Find
+the real source of each in the schema you were given.
 
 ```
 task_code                       e.g. 'FLME1180-30356'
  └ text before the FIRST '-'  = activity_id           'FLME1180'
-    → dbo.mapping_master.Activity_ID          (CAST to nvarchar — it is a `text` column)
+    → activity mapping: Activity_ID           (CAST to nvarchar — it is a `text` column)
        → .New_Activity_Code                            'F-M-SLW-GWD-01'
-          → dbo.activity_master_csv.activity_code
+          → activity description: activity_code
              → .activity_group_description = WBS      'Straightline Welding incl. supports'
              → .crew_code                  = crew     'YWS-0602'
 ```
@@ -66,10 +80,10 @@ task_code                       e.g. 'FLME1180-30356'
   `LEFT(task_code, NULLIF(CHARINDEX('-', task_code), 0) - 1)`
 - ⚠ `Activity_ID` is a legacy `text` column — comparing it directly FAILS with "the data types
   text and nvarchar are incompatible". ALWAYS `CAST(m.Activity_ID AS nvarchar(50))`.
-- ⚠ Join on `New_Activity_Code`, NEVER `Old_Activity_Code`. `activity_master_csv` was migrated to
+- ⚠ Join on `New_Activity_Code`, NEVER `Old_Activity_Code`. the activity-description lookup was migrated to
   the new scheme, and the old column now fails SILENTLY — a NULL WBS, not an error.
   (Maintainers: this flipped once. If WBS comes back empty everywhere, count how many Old vs New
-  codes match `activity_master_csv.activity_code` using two SEPARATE joins — a single join with
+  codes match the description lookup's `activity_code` using two SEPARATE joins — a single join with
   `IN (Old, New)` matches on either column then counts both, which reverses the answer. Higher
   count wins.)
 - `task_code` is an INTERNAL key: use it to derive `activity_id`, and NEVER display it when the
@@ -79,14 +93,14 @@ task_code                       e.g. 'FLME1180-30356'
 
 ```sql
 -- Second hop, identical in every shape below:
---   LEFT JOIN dbo.activity_master_csv amc ON amc.activity_code = m.New_Activity_Code
+--   LEFT JOIN <activity description> amc ON amc.activity_code = m.New_Activity_Code
 -- LEFT so unmapped work stays visible and the unmapped tally can be non-zero. The ACTIVITY LIST
 -- is the one exception: it uses an inner JOIN, since an activity with no mapping row is not
 -- a listable activity.
 
 -- per ACTIVITY  ("what activities does this well have")  -> one row per activity, NO task_code
 SELECT DISTINCT a.activity_id, m.New_Activity_Code AS activity_code
-FROM a JOIN dbo.mapping_master m ON CAST(m.Activity_ID AS nvarchar(50)) = a.activity_id
+FROM a JOIN <activity mapping> m ON CAST(m.Activity_ID AS nvarchar(50)) = a.activity_id
 
 -- per TASK  (ONLY when the question asks for tasks)  -> one row per task_code
 SELECT a.task_code, a.activity_id, m.New_Activity_Code AS activity_code,
@@ -110,42 +124,43 @@ per-TASK rows for a per-WBS question either — that same well returns 90 task r
 
 ## 4. Milestone deadlines
 
-Every deadline is derived from a date in §2. For a milestone that **has** an actual date column,
-"missed" = the actual date is later than the deadline, or the actual date is still NULL once the
-deadline has passed. The two construction milestones have no actual date — see the rig rule below.
+Every deadline is derived from a date in §2; none is stored. For a milestone that **has** an
+actual date, "missed" means the actual date is later than the deadline, or the deadline has
+passed and the actual date is still absent. The two construction milestones have no actual
+date — see the rig rule below.
 
-| Milestone | Owner | Actual date recorded in | Deadline |
+| Milestone | Owner | Has an actual date | Deadline |
 |---|---|---|---|
-| Pegging sheet issued | PDO | `pegged_date` | `ex_rig_on_date - 60 days` |
-| FLAF issued | PDO | `flaf_issue_date` | `ex_rig_on_date - 90 days` |
-| Location Construction complete | Al Tasnim | *computed, not stored* | `ex_rig_on_date - 1 day` |
-| Flowline Construction complete | Al Tasnim | *computed, not stored* | `ex_rig_on_date - 1 day` |
-| Hook-up complete | Al Tasnim | `eng_completion_date` | `rig_off_date + 2 days` |
+| Pegging sheet issued | PDO | yes | expected rig-on date − 60 days |
+| FLAF issued | PDO | yes | expected rig-on date − 90 days |
+| Location Construction complete | Al Tasnim | no — computed | expected rig-on date − 1 day |
+| Flowline Construction complete | Al Tasnim | no — computed | expected rig-on date − 1 day |
+| Hook-up complete | Al Tasnim | yes | rig-off date + 2 days |
 
-**Construction deadlines are COMPUTED from `ex_rig_on_date` — never read from a stored column.**
-Derive them as `ex_rig_on_date - 1 day`. Do **NOT** use `loc_start_date` or `loc_finish_date` as a
-Location Construction completion date; they are not the approved source for this rule.
+**Construction deadlines are COMPUTED from the expected rig-on date** — never read from a
+stored value. Nothing in the data is an approved Location Construction completion date, so
+never substitute one that merely looks like it.
 
-**Construction missed its deadline** — there is no actual completion date, so judge it from the
-rig: the deadline has passed and the rig has still not come on the well.
+**Judging a missed construction deadline.** With no actual completion date, judge it from
+the rig: the deadline has passed and the rig has still not come on the well.
 
 ```
 missed  ⇔  CAST(GETDATE() AS date) > DATEADD(day, -1, ex_rig_on_date)
            AND rig_on_date IS NULL
 ```
 
-If `rig_on_date` is populated the rig came on, and the construction deadline is **not** treated as
-missed. This rule therefore identifies wells still waiting for a rig past their deadline; it does
-not detect a construction delay on a well whose rig has already arrived.
+If the rig has come on, the construction deadline is **not** treated as missed. This rule
+therefore identifies wells still waiting for a rig past their deadline; it does not detect a
+construction delay on a well whose rig has already arrived.
 
-**Hook-up deadline — planned vs actual.** Before the rig is off, the planned deadline is
-`ex_rig_off_date + 2 days`. Once `rig_off_date` is populated, the actual deadline is
-`rig_off_date + 2 days`, and **the actual date takes precedence**.
+**Hook-up deadline — planned vs actual.** Before the rig is off, the planned deadline is the
+expected rig-off date + 2 days. Once the actual rig-off date exists, the deadline is that
+date + 2 days, and **the actual date takes precedence**.
 
 ## 5. Schedule variance — being EARLY is not an anomaly
 
-An expected date and an actual date differing is **normal**. A difference is never, on its own, a
-data error, a suspicious value, or an anomaly to flag. Read the **direction**:
+An expected date and an actual date differing is **normal**. A difference is never, on its
+own, a data error, a suspicious value, or an anomaly to flag. Read the **direction**:
 
 | Comparison | Meaning | Report it as |
 |---|---|---|
@@ -155,12 +170,12 @@ data error, a suspicious value, or an anomaly to flag. Read the **direction**:
 
 This applies to **both** rig dates:
 
-* `rig_on_date` earlier than `ex_rig_on_date` → construction finished early and the rig came on
-  ahead of the master date. The well is **accelerating**, not anomalous.
-* `rig_off_date` earlier than `ex_rig_off_date` → drilling finished early. Again ahead of schedule,
-  not a wrong date.
+* Rig-on earlier than expected → construction finished early and the rig came on ahead of
+  the master date. The well is **accelerating**, not anomalous.
+* Rig-off earlier than expected → drilling finished early. Again ahead of schedule, not a
+  wrong date.
 
-One signed measure, so the sign always carries the meaning:
+Use one signed measure, so the sign always carries the meaning:
 
 ```
 schedule_variance_days = DATEDIFF(day, ex_rig_on_date, rig_on_date)
@@ -169,14 +184,12 @@ schedule_variance_days = DATEDIFF(day, ex_rig_on_date, rig_on_date)
     positive → BEHIND schedule (delayed)
 ```
 
-(Use `ex_rig_off_date` / `rig_off_date` for the rig-off variance.)
+⚠ NEVER describe an early actual date as a delay, a variance problem, a data-quality issue
+or an anomaly, and never take its absolute value and call it "days of delay". Only a
+**later** actual date is a delay. When a well is early, say so plainly as good news.
 
-⚠ NEVER describe an early actual date as a delay, a variance problem, a data-quality issue or an
-anomaly, and never take its absolute value and call it "days of delay". Only a **later** actual
-date is a delay. When a well is early, say so plainly as good news.
-
-This section is about actual-vs-expected variance only. It does not change the milestone deadline
-rules in §4.
+This section is about actual-vs-expected variance only. It does not change the milestone
+deadline rules in §4.
 
 ## 6. Delay consequences — ownership matters
 
@@ -192,22 +205,23 @@ Never report a delay as Al Tasnim's without applying this distinction.
 ```
 PDO issues pegging sheet  → Al Tasnim: Location Construction ┐
 PDO issues FLAF           → Al Tasnim: Flowline Construction ┘
-  → both complete before ex_rig_on_date
-  → PDO rig-on (rig_on_date)
+  → both complete before the expected rig-on date
+  → PDO rig-on
   → PDO drilling
-  → rig-off (rig_off_date)
-  → well cleaned, Christmas Tree fitted        ← "Christmas Tree" = the pipe/motor assembly
+  → rig-off
+  → well cleaned, Christmas Tree fitted    ← "Christmas Tree" = the pipe/motor assembly
   → handover to Al Tasnim
-  → Al Tasnim hook-up (eng_completion_date)
+  → Al Tasnim hook-up
   → WELL COMPLETED
 ```
 
-Drilling runs from actual rig-on to actual rig-off and is **PDO's** activity, not Al Tasnim's.
+Drilling runs from actual rig-on to actual rig-off and is **PDO's** activity, not Al
+Tasnim's.
 
 ## 8. Well completion
 
-A well is **completed** when Al Tasnim's hook-up is complete. Therefore
-`eng_completion_date` **is** the well completion date, and:
+A well is **completed** when Al Tasnim's hook-up is complete. The hook-up completion date
+**is** the well completion date, and:
 
 ```
 completed  ⇔  eng_completion_date IS NOT NULL
@@ -228,46 +242,46 @@ Project
 
 Weightage rules:
 
-* Each WBS/activity group carries its own **PMS percentage (weightage)**. Different WBS groups can
-  have different weightages — e.g. WBS 1 = 30%, WBS 2 = 20%, WBS 3 = 50%.
-* Activities **within the same WBS have equal weightage**. For a WBS holding `N` activities, each
-  activity's share inside that WBS is `1 / N`.
+* Each WBS/activity group carries its own **PMS percentage (weightage)**. Different WBS
+  groups can have different weightages — e.g. WBS 1 = 30%, WBS 2 = 20%, WBS 3 = 50%.
+* Activities **within the same WBS have equal weightage**. For a WBS holding `N` activities,
+  each activity's share inside that WBS is `1 / N`.
 * An activity's contribution to the overall project PMS is therefore:
 
   ```
   activity contribution = parent WBS PMS weight × (1 / N)
   ```
 
-* **Do not** assume activities in different WBS groups carry the same overall PMS weight — their
-  contribution depends on the weight of their parent WBS.
+* **Do not** assume activities in different WBS groups carry the same overall PMS weight —
+  their contribution depends on the weight of their parent WBS.
 
 ## 10. Never interchange these pairs
 
 | | vs | |
 |---|---|---|
 | Expected / master date | ⟷ | Actual date |
-| `ex_rig_on_date` | ⟷ | `rig_on_date` |
-| `ex_rig_off_date` | ⟷ | `rig_off_date` |
+| Expected rig-on date | ⟷ | Actual rig-on date |
+| Expected rig-off date | ⟷ | Actual rig-off date |
 | PDO responsibility | ⟷ | Al Tasnim responsibility |
 | Location Construction | ⟷ | Flowline Construction |
 | Project-level PMS weightage | ⟷ | Activity-level equal weighting |
 | Hook-up deadline | ⟷ | Well completion |
 
-`ex_rig_off_date` is a planning figure. Never report it as the actual rig-off date.
+The expected rig-off date is a planning figure. Never report it as the actual rig-off date.
 
 ## 11. Not yet defined
 
 Answer what you can and state plainly that the rule is undefined — never invent one:
 
 * Whether Location Construction and Flowline Construction have an **actual completion date**
-  anywhere. No column is approved as that date, so never substitute one to fill the gap —
-  on-time/missed is judged by the rig rule in §4 instead.
+  recorded anywhere. Nothing is approved as that date, so never substitute something to fill
+  the gap — on-time/missed is judged by the rig rule in §4 instead.
 
 ## 12. Strict instructions
 
 * These rules are authoritative for every question about PDO, Al Tasnim, wells, Location
-  Construction, Flowline Construction, pegging, FLAF, rig-on, rig-off, hook-up, well completion,
-  WBS, activities and PMS.
+  Construction, Flowline Construction, pegging, FLAF, rig-on, rig-off, hook-up, well
+  completion, WBS, activities and PMS.
 * Do not infer, modify, or invent a business definition.
-* If the database holds a value that conflicts with a business rule, **report the database value**
-  and explain the business-rule interpretation separately. Never silently change a database result.
+* If the data holds a value that conflicts with a business rule, **report the actual value**
+  and explain the business-rule interpretation separately. Never silently change a result.
