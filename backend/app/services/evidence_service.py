@@ -146,15 +146,39 @@ class EvidenceService:
         # Totals are only meaningful inside one unit of measure. Where the scope
         # spans several, the totals are withheld rather than added together.
         single_uom = len(uom_codes) == 1
-        summary: Dict[str, Any] = {
-            "well_count": len(wells),
-            "task_count": len(tasks),
-            "status_counts": status_counts,
-            "planned_quantity": _q(planned_total) if single_uom else None,
-            "actual_quantity": _q(actual_total) if single_uom else None,
-            "quantities_summable": single_uom,
-        }
-        if not single_uom:
+        if not tasks:
+            # A scope can be real and still have no entry for this date -- a
+            # well is on the front page on a day it reported nothing, and its
+            # task activity is separate evidence (see WellActivityService).
+            #
+            # This case gets a summary of its own rather than the usual one
+            # filled with zeroes. A zeroed `well_count` and five zeroed status
+            # counts are true but meaningless here, and the model read them
+            # out loud: explaining one well, it opened with "there are 0 wells
+            # and 0 tasks in scope", which describes the shape of the payload
+            # rather than the well. There is exactly one fact to state, so the
+            # payload now carries exactly that fact.
+            summary: Dict[str, Any] = {
+                "task_count": 0,
+                "no_daily_entry": True,
+                "note": (
+                    "No daily task entry was recorded in this selection on this "
+                    "report date. This is an absence of any entry, not a zero "
+                    "quantity, and there is no quantity, status or count to "
+                    "report for the date itself. It says nothing about what the "
+                    "well's tasks are doing otherwise."
+                ),
+            }
+        else:
+            summary = {
+                "well_count": len(wells),
+                "task_count": len(tasks),
+                "status_counts": status_counts,
+                "planned_quantity": _q(planned_total) if single_uom else None,
+                "actual_quantity": _q(actual_total) if single_uom else None,
+                "quantities_summable": single_uom,
+            }
+        if tasks and not single_uom:
             summary["quantities_withheld_reason"] = (
                 "This scope spans more than one unit of measure. No conversion "
                 "between units is defined, so quantities are not totalled."
@@ -208,6 +232,13 @@ class EvidenceService:
             },
             "tasks": [self._task_evidence(task) for task in included],
         }
+        if not tasks:
+            # Nothing was reported, so there is no status to define and no
+            # task to list. Both keys are dropped rather than sent empty: an
+            # empty list invites a sentence about what is not there, and the
+            # one fact worth stating is already in `summary`.
+            payload.pop("status_definitions", None)
+            payload.pop("tasks", None)
         if len(tasks) > len(included):
             payload["tasks_truncated"] = {
                 "included": len(included),

@@ -78,6 +78,19 @@ export const api = {
       signal,
     }),
 
+  /**
+   * Per-well task activity as of the selected date: incomplete and ongoing
+   * task counts, whether the well reported anything on the date, and the last
+   * date it appeared in the task records. Every figure is computed by the
+   * backend; passing `wellId` additionally returns the incomplete tasks
+   * behind that one well's counts, for its expandable detail.
+   */
+  wellActivity: ({ date, wellId, refresh = false }, signal) =>
+    request('/api/daily/well-activity', {
+      params: { date, well_id: wellId, refresh: refresh || undefined },
+      signal,
+    }),
+
   wellDetail: (wellId, date, signal) =>
     request(`/api/daily/well/${wellId}`, { params: { date }, signal }),
 

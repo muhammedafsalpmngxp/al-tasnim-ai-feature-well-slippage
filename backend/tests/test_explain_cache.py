@@ -27,11 +27,26 @@ from app.api import dependencies
 from app.models.daily import DayCounters
 from app.services.daily_service import DailyService
 from app.services.llm_service import LLMService, LLMUnavailable, _ExplainCache
-from tests.conftest import REPORT_DATE, make_row
+from tests.conftest import REPORT_DATE, make_row, stub_well_activity_service
 
 ROWS = [
     make_row(task_daily_id=1, well_id=101, planned=10, actual_quantity=10),
     make_row(task_daily_id=2, well_id=102, planned=5, actual_quantity=4),
+]
+
+#: Shaped like well_task_activity.sql returns, for the same two wells.
+ACTIVITY_ROWS = [
+    {
+        "well_id": well_id,
+        "logical_task_count": 4,
+        "completed_task_count": 2,
+        "incomplete_task_count": 2,
+        "ongoing_task_count": 1,
+        "not_started_task_count": 1,
+        "ended_not_completed_task_count": 0,
+        "last_task_date": REPORT_DATE,
+    }
+    for well_id in (101, 102)
 ]
 
 
@@ -79,10 +94,14 @@ def client_and_llm(monkeypatch):
 
     daily_service = DailyService(repository=StubRepository(ROWS))
     llm_service = CountingLLMService()
+    # A well scope's evidence now carries that well's task activity; stub it
+    # so these tests stay offline and their evidence stays fixed.
+    activity_service = stub_well_activity_service(ACTIVITY_ROWS)
     monkeypatch.setattr(dependencies, "_daily_service", daily_service)
     monkeypatch.setattr(dependencies, "_llm_service", llm_service)
     app.dependency_overrides[dependencies.get_daily_service] = lambda: daily_service
     app.dependency_overrides[dependencies.get_llm_service] = lambda: llm_service
+    app.dependency_overrides[dependencies.get_well_activity_service] = lambda: activity_service
     try:
         yield TestClient(app), llm_service
     finally:

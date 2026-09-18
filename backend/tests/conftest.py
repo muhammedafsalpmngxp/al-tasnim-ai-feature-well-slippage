@@ -59,6 +59,37 @@ def make_row(**overrides: Any) -> Dict[str, Any]:
     return row
 
 
+class StubWellRepository:
+    """A WellRepository that answers from fixed rows instead of the database.
+
+    Lets any test that goes through /api/daily/explain or
+    /api/daily/well-activity stay offline: the well-scoped evidence now
+    includes a well's task activity, and that would otherwise be the one part
+    of an otherwise hermetic test that reaches SQL Server.
+    """
+
+    def __init__(self, activity=None, detail=None):
+        self.activity = list(activity or [])
+        self.detail = list(detail or [])
+
+    def fetch_well_task_activity(self, report_date: date):
+        return list(self.activity)
+
+    def fetch_well_task_activity_detail(self, report_date: date):
+        return list(self.detail)
+
+    def fetch_outstanding_milestones(self):
+        return []
+
+
+def stub_well_activity_service(activity=None, detail=None):
+    """A real WellActivityService over StubWellRepository -- real aggregation,
+    real caching, no database."""
+    from app.services.well_activity_service import WellActivityService
+
+    return WellActivityService(StubWellRepository(activity, detail))
+
+
 @pytest.fixture
 def report_date() -> date:
     return REPORT_DATE

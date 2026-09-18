@@ -21,20 +21,49 @@ from app.api.dependencies import (
     get_daily_service,
     get_evidence_service,
     get_llm_service,
+    get_well_activity_service,
     load_dataset,
 )
 from app.models.daily import DailyTask
-from app.schemas.daily import ExplainRequest, ExplainResponse
+from app.schemas.daily import ExplainRequest, ExplainResponse, ProofRowOut, SqlSourceOut
 from app.services.crew_suggestion_service import CrewSuggestionService
 from app.services.daily_service import DailyService
 from app.services.evidence_service import EvidenceService
 from app.services.llm_service import LLMService
+from app.services.well_activity_service import WellActivityService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/daily", tags=["explain"])
 
 VALID_SCOPES = {"day", "uom", "group", "status", "well", "task"}
+
+#: How many proof rows travel to the panel. A well's incomplete tasks run to
+#: a few dozen at most on this data, so this only bounds a pathological case
+#: -- and when it bites, the response says so rather than quietly truncating.
+_PROOF_ROW_LIMIT = 300
+
+
+def _is_filtered(request: ExplainRequest) -> bool:
+    """True when a "day" request is really a slice of the day.
+
+    The well-universe overview belongs to the whole view only. A request
+    narrowed to one status, WBS, activity, unit or well is describing a
+    subset of the day's reported tasks, and a count of every live well's open
+    work alongside it would be a different population than the one being
+    explained.
+    """
+    return any(
+        value is not None
+        for value in (
+            request.uom,
+            request.wbs,
+            request.activity_code,
+            request.status,
+            request.well_id,
+            request.task_daily_id,
+        )
+    )
 
 
 @router.post("/explain", response_model=ExplainResponse)
@@ -44,6 +73,7 @@ def explain(
     evidence_service: EvidenceService = Depends(get_evidence_service),
     llm_service: LLMService = Depends(get_llm_service),
     crew_suggestion_service: CrewSuggestionService = Depends(get_crew_suggestion_service),
+    activity_service: WellActivityService = Depends(get_well_activity_service),
 ) -> ExplainResponse:
     scope = (request.scope or "day").strip().lower()
     if scope not in VALID_SCOPES:
@@ -71,7 +101,39 @@ def explain(
     if request.task_daily_id is not None:
         tasks = [task for task in tasks if task.task_daily_id == request.task_daily_id]
 
-    if not tasks:
+    # A well's own task activity spans every date up to the report date, not
+    # just that one date's entries, so it is resolved for a well scope
+    # whether or not the well reported anything on the date itself. It is
+    # also the reason a well with no task today can still be explained: the
+    # evidence about it -- how many of its tasks are incomplete, how many are
+    # ongoing, when it was last seen -- exists regardless.
+    well_activity = None
+    day_activity = None
+    proof_rows: List[dict] = []
+    if scope == "well" and request.well_id is not None:
+        try:
+            well_activity = activity_service.evidence(
+                request.report_date, dataset, request.well_id
+            )
+            # The working behind those figures, for the operator's own
+            # panel: every incomplete task with the reason it is counted.
+            # Never added to the evidence -- this is proof to read, not
+            # input for the model.
+            proof_rows = activity_service.proof_rows(request.report_date, request.well_id)
+        except Exception:  # noqa: BLE001 - this must never break the well's own summary
+            logger.exception("well task-activity evidence failed; continuing without it")
+    elif scope == "day" and not _is_filtered(request):
+        # The whole-view explanation describes the day the front page is
+        # showing, and that page is a list of live wells -- including the ones
+        # that reported nothing. Without this the summary could only discuss
+        # what was reported: on a quiet day, one well and one task, while
+        # hundreds of live wells carried unfinished work it never saw.
+        try:
+            day_activity = activity_service.day_evidence(request.report_date, dataset)
+        except Exception:  # noqa: BLE001 - this must never break the day's own summary
+            logger.exception("day task-activity evidence failed; continuing without it")
+
+    if not tasks and well_activity is None and day_activity is None:
         return ExplainResponse(
             report_date=request.report_date,
             scope=scope,
@@ -90,6 +152,17 @@ def explain(
         status=request.status,
         well_id=request.well_id,
     )
+
+    if well_activity is not None:
+        # Merged as its own block rather than folded into "summary": the
+        # summary describes what the well did on the report date, this
+        # describes where the well's tasks stand overall as of it. Keeping
+        # them apart is what stops the model reading one as the other.
+        evidence["well_task_activity"] = well_activity
+    if day_activity is not None:
+        # Same separation, one level up: what every live well's tasks add up
+        # to as of the date, beside what was actually reported on it.
+        evidence["live_well_task_activity"] = day_activity
 
     # Crew suggestion is an extension of the task-specific AI summary only --
     # never a second UI control or a second request. It rides inside this
@@ -122,13 +195,36 @@ def explain(
     # mention) and `no_suggestion_reason` (eligible, but no crew found) are
     # each, on their own, something worth the model narrating.
     llm_evidence = evidence
+    withheld: List[str] = []
     crew_suggestion_evidence = evidence.get("crew_suggestion")
     if isinstance(crew_suggestion_evidence, dict) and not (
         crew_suggestion_evidence.get("suggested_crew")
         or crew_suggestion_evidence.get("consult_crew")
         or crew_suggestion_evidence.get("no_suggestion_reason")
     ):
+        withheld.append("crew_suggestion")
         llm_evidence = {key: value for key, value in evidence.items() if key != "crew_suggestion"}
+
+    # The queries behind whichever figures this scope carries, and the rows
+    # behind its counts. Both are for the panel, and neither has been near
+    # `llm_evidence` above.
+    sql_sources: List[SqlSourceOut] = []
+    if well_activity is not None or day_activity is not None:
+        try:
+            sql_sources = [
+                SqlSourceOut(**source)
+                for source in activity_service.sql_sources(request.report_date)
+            ]
+        except Exception:  # noqa: BLE001 - a missing .sql file must not break the summary
+            logger.exception("could not load the SQL sources; continuing without them")
+
+    shown_proof = proof_rows[:_PROOF_ROW_LIMIT]
+    proof_note = None
+    if len(proof_rows) > len(shown_proof):
+        proof_note = (
+            f"Showing the first {len(shown_proof)} of {len(proof_rows)} incomplete "
+            "tasks. The counts above cover all of them."
+        )
 
     result = llm_service.explain_safe(llm_evidence)
     if not result["available"]:
@@ -143,4 +239,8 @@ def explain(
         model=result["model"],
         cached=result.get("cached", False),
         evidence=evidence,
+        evidence_withheld_from_model=withheld,
+        sql_sources=sql_sources,
+        proof=[ProofRowOut(**row) for row in shown_proof],
+        proof_note=proof_note,
     )

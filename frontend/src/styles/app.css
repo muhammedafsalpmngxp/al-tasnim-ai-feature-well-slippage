@@ -514,6 +514,200 @@ button {
   padding: 6px 12px;
 }
 
+/* ---- well task activity -------------------------------------------------- */
+/* The second line of a well row: the well's task activity as of the selected
+   date. Every figure is backend-computed; the row only displays it, and each
+   metric expands the tasks behind it inside this same card so an expanded
+   list is never ambiguous about which well it belongs to. */
+
+.task-activity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 0 0 9px 0;
+  border-top: 1px dashed var(--border);
+  margin-top: 2px;
+  padding-top: 9px;
+}
+
+.task-metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 11px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.task-metric:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.task-metric:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.task-metric--open {
+  border-color: var(--accent);
+}
+
+/* The total the two figures beside it add up to: same shape, a little more
+   weight, so the relationship reads at a glance without a second colour. */
+.task-metric--total {
+  background: var(--bg-card);
+  border-color: var(--border-strong);
+  font-weight: 600;
+}
+
+.task-metric__label {
+  font-size: 11.5px;
+}
+
+.task-activity__date {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.task-detail {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  padding: 10px 12px 4px;
+  margin: 0 0 10px;
+}
+
+.task-detail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.task-detail__title {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.task-detail__close {
+  font-size: 11.5px;
+  padding: 3px 9px;
+}
+
+.task-detail__note {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0 10px;
+}
+
+.task-detail__note--error {
+  color: var(--danger);
+}
+
+.task-detail__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.task-detail__table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0 10px 5px 0;
+  white-space: nowrap;
+}
+
+.task-detail__table td {
+  padding: 4px 10px 4px 0;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.task-detail__code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.task-detail__empty {
+  color: var(--text-muted);
+}
+
+/* Task state keeps its own hue, the same way a quantity status does: a state
+   that already carries meaning is never recoloured to the generic numeric
+   teal. Ongoing reuses the "work is under way" blue, ended-not-completed the
+   amber already used for a condition worth a second look, and not-started the
+   neutral grey. None of them means an error. */
+.task-state {
+  font-weight: 600;
+}
+
+.task-state--ONGOING {
+  color: var(--above-plan);
+}
+
+.task-state--NOT_STARTED {
+  color: var(--no-actual);
+}
+
+.task-state--ENDED_NOT_COMPLETED {
+  color: var(--below-plan);
+}
+
+.task-state--COMPLETED {
+  color: var(--on-plan);
+}
+
+.well-scope {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.well-scope__btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.well-scope__btn:hover {
+  background: var(--bg-hover);
+}
+
+.well-scope__btn--on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.well-list__note {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 0 0 10px;
+}
+
+.well-list__note--error {
+  color: var(--danger);
+}
+
 /* ---- status pill --------------------------------------------------------- */
 
 .status-pill {
@@ -771,20 +965,162 @@ td.wrap {
 }
 
 /* Colour tells the "generated just now, or reused" story instead of a
-   "cached" text label: green for a fresh call to the LLM, red for an
-   earlier answer reused because nothing about this selection has changed.
-   A tinted left rail plus a matching border keeps the tone visible without
-   recolouring the prose itself. */
-.explain--fresh {
+   "cached" text label -- and only the reused case is coloured. A reused
+   answer is green (--on-plan, the same token the rest of the app already
+   uses for a settled, expected state): nothing underneath it has changed
+   since it was written, so no new call was needed. A freshly generated
+   answer keeps the panel's ordinary styling above, because generating one
+   is the normal thing to happen, not a status to flag -- an earlier version
+   coloured fresh green and cached red, which read as "something is wrong
+   with this answer" about the most ordinary case there is. Danger red is
+   reserved for failures, here as everywhere else in this dashboard. */
+.explain--cached {
   border-color: var(--on-plan);
   background: var(--on-plan-bg);
   border-left-width: 4px;
 }
 
-.explain--cached {
-  border-color: var(--danger);
-  background: var(--danger-bg);
-  border-left-width: 4px;
+/* A short aside above the evidence payload -- e.g. naming a block returned
+   for audit but deliberately not sent to the model. */
+.explain__note {
+  margin-top: 9px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* ---- showing the working -------------------------------------------------
+   Three collapsed drawers under an explanation: the evidence the model was
+   given, the SQL the figures came from, and the task records behind the
+   counts. All closed by default -- the panel is for reading, and the working
+   is there for the moment someone wants to check it. */
+
+.explain__drawer {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.explain__drawer-summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.explain__drawer-summary:hover {
+  color: var(--text);
+}
+
+.explain__pre {
+  margin-top: 9px;
+  max-height: 300px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 11px;
+  white-space: pre;
+}
+
+.explain__sql {
+  margin-top: 10px;
+}
+
+.explain__sql-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.explain__sql-file {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.explain__sql-params {
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--num);
+}
+
+.explain__table-wrap {
+  margin-top: 9px;
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.proof-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  background: var(--bg-raised);
+}
+
+.proof-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: 600;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.proof-table td {
+  padding: 5px 9px;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.proof-table__code {
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.proof-table__flag {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The reason an operator came here to read gets the full width of the table,
+   on its own line under the row it explains. As a tenth column it was pushed
+   off the edge; squeezed into a tenth of the width it wrapped into an
+   unreadable ribbon. */
+.proof-table__why td {
+  padding: 0 9px 7px 9px;
+  border-top: none;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.proof-table__description {
+  width: 34%;
+  min-width: 160px;
+}
+
+.proof-table tbody tr:not(.proof-table__why) td {
+  white-space: nowrap;
+}
+
+.proof-table__description,
+.proof-table tbody tr:not(.proof-table__why) td.proof-table__description {
+  white-space: normal;
 }
 
 .explain__head {
@@ -1122,6 +1458,14 @@ td.wrap {
 
   .well-row__line {
     flex-wrap: wrap;
+  }
+
+  .task-activity {
+    gap: 6px 10px;
+  }
+
+  .task-detail {
+    overflow-x: auto;
   }
 
   .milestone-row__summary {

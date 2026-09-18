@@ -10,16 +10,20 @@ Daily Summary (one row per well) → Well → Daily Tasks → AI Explanation
 ```
 
 The dashboard's front page is a flat list, one row per live well, sorted busiest first:
-well ID, its main activity (plus how many others), task count, and its non-zero status
-counts (`On Plan`, `Above Plan`, `Below Plan`, `No Actual`, `Not Validated`). An earlier
+well ID, its main activity (plus how many others), task count, its non-zero status
+counts (`On Plan`, `Above Plan`, `Below Plan`, `No Actual`, `Not Validated`), and that
+well's task activity as of the selected date — how many of its tasks are incomplete, how
+many are ongoing, how many it reported on the date itself, and the last date it appears in
+the task records at all (§19). An earlier
 version organised the day by validation status, then work category, then activity, before
 ever reaching a well; that hierarchy was accurate but took several clicks to answer the
 question the brief exists to answer first: *what did each well do, and how did it come
 out?* The backend still computes and serves that grouped hierarchy (`/api/daily/summary`,
 §5, §8) — nothing about the classification changed — the well-first list is a front-end
 presentation choice on top of the same evidence. Clicking a row opens that well's full
-detail; "AI summary" is a second, independent control on each row that expands an
-explanation of that well's day in place, without navigating away.
+detail; each task-activity figure expands, in place on that same row, into the tasks behind
+it; and "AI summary" is a second, independent control on each row that expands an
+explanation of that well in place, without navigating away.
 
 The architecture has one rule that everything else follows:
 
@@ -106,9 +110,22 @@ cd backend
 python -m pytest
 ```
 
-194 tests. The deterministic tests run offline; the tests in `tests/test_live_wells_db.py`,
-`tests/test_wells_live_db.py` and `tests/test_crew_suggestion_live_db.py` run against SQL
-Server and skip themselves when it is unreachable.
+316 tests. The deterministic tests run offline; the tests in `tests/test_live_wells_db.py`,
+`tests/test_wells_live_db.py`, `tests/test_crew_suggestion_live_db.py` and
+`tests/test_well_activity_live_db.py` run against SQL Server and skip themselves when it is
+unreachable.
+
+```bash
+cd frontend
+npm test
+```
+
+40 component tests (Vitest + Testing Library, jsdom). They render a component with fixed
+backend responses and assert what an operator would see — the task-activity figures on a
+well row, which well an expanded task list belongs to, that a date change closes an open
+explanation, that "Refresh" reloads every part of the front page, and that a freshly
+generated explanation can never be shown as a reused one. None of them reaches the API, the
+database or the LLM.
 
 ---
 
@@ -119,7 +136,8 @@ project-root/
 ├── README.md                    ← this file
 ├── run.py                       ← dev launcher: starts backend + frontend together
 ├── llm_usage_tracker.py         ← independent LLM token-expense logger (§10) -- reads only backend/.env
-├── llm_usage_log.xlsx           ← its output: one row per real LLM call, a live totals row always last
+├── llm_usage_log.xlsx           ← its output: LLM Usage (one row per real call this app made) +
+│                                 OpenAI Usage + Reconciliation (what OpenAI actually billed, via `sync`)
 ├── test_llm_usage_tracker.py    ← its own tests -- run standalone: pytest test_llm_usage_tracker.py
 ├── backend/
 │   ├── .env                     ← environment-specific values (never committed)
@@ -138,9 +156,11 @@ project-root/
 │   │   ├── config/              settings + read-only database access
 │   │   └── utils/               SQL loader, logging
 │   ├── sql/                     daily_tasks · daily_detail · daily_summary · well_milestones ·
-│   │                             crew_suggestion (§18)
+│   │                             crew_suggestion (§18) · well_task_state ·
+│   │                             well_task_activity · well_task_activity_detail (§19)
 │   └── tests/                   incl. test_crew_suggestion.py, test_crew_suggestion_wiring.py,
-│                                 test_crew_suggestion_live_db.py
+│                                 test_crew_suggestion_live_db.py, test_well_activity.py,
+│                                 test_well_activity_api.py, test_well_activity_live_db.py
 └── frontend/
     ├── package.json
     ├── vite.config.js
@@ -149,6 +169,7 @@ project-root/
         ├── components/          DayStrip · WellList · StatusCount ·
         │                        WellDetail · MilestoneBanner (MilestonesPage) ·
         │                        ExplainPanel · common
+        │                        (*.test.jsx beside the component it covers)
         ├── pages/DailyMorningBrief/
         ├── services/api.js      the only place the UI calls the backend
         ├── hooks/
@@ -355,6 +376,7 @@ folded into a quantity:
 | `GET /api/daily/details?date=` | Dataset B — every logical daily task |
 | `GET /api/daily/group-details?date=&status=&wbs=&activity_code=&uom=&refresh=` | The rows behind one figure — called with no filter at all, also the whole day's per-well rollup behind the main dashboard's well list |
 | `GET /api/daily/well/{well_id}?date=` | Every task one well ran that day |
+| `GET /api/daily/well-activity?date=&well_id=&refresh=` | Per-well task activity as of the date — incomplete / ongoing / reported-today counts and the last task date. With `well_id`, also the incomplete tasks behind that well's counts — see §19 |
 | `GET /api/daily/dates?limit=` | Recent dates that carry daily entries |
 | `GET /api/daily/export?date=` | `daily_morning_brief_YYYY-MM-DD.xlsx` |
 | `POST /api/daily/explain` | Evidence + LLM explanation for a named scope. For `scope="task"`, the evidence and explanation also fold in an advisory crew suggestion when the task qualifies — see §18. |
@@ -503,14 +525,36 @@ only when the figures they describe are byte-identical, so a real change in the 
 data is never served a stale answer, with no separate "is this still valid" check required.
 Only a *successful* explanation is ever cached — a transient provider failure is retried on
 the next identical request, never remembered as permanent. `ExplainResponse.cached` reports
-which happened; the panel shows it as a colour, not a word — green (`.explain--fresh`, tinted
-with the same `--on-plan` token used everywhere else in the app) for a call just made to the
-LLM, red (`.explain--cached`, `--danger`) for an earlier answer reused. A "cached" text label
+which happened; the panel shows it as a colour, not a word, and **only the reused case is
+coloured**: green (`.explain--cached`, tinted with the same `--on-plan` token used everywhere
+else in the app) for an earlier answer reused, and the panel's ordinary styling for one just
+generated. An earlier version had this the other way round and in the wrong palette — green
+for fresh, red (`--danger`) for cached — which read as *something is wrong with this answer*
+about the most ordinary thing that can happen, and spent the one colour this dashboard
+reserves for failures on a success. Generating an explanation is not a status worth flagging;
+reusing one, which is what says nothing underneath it has changed, is. A "cached" text label
 was tried first and judged to be one more thing to read on a screen meant to be skimmed; a
 colour already carries meaning throughout this dashboard (status pills, day-strip figures),
 so this reuses that convention instead of introducing a new kind of label. Neither tone is
 shown while loading or when the explanation is unavailable — there is nothing generated or
 reused yet to signal.
+
+**A first generation could also *report* itself as reused — the second half of the same bug.**
+`ExplainResponse.cached` was always propagated correctly (backend → response → panel state), so
+the colour was telling the truth about the response it was given; the problem was which
+response the panel ended up holding. React's development StrictMode mounts a component twice,
+so opening a panel fired the request twice: the first was aborted by the effect's cleanup,
+the second arrived after the backend had already generated and cached the answer — and was
+correctly marked `cached: true`. The very first time an operator opened a well's summary, the
+panel therefore said "reused". `ExplainPanel` now holds one in-flight promise per identical
+request and shares it, so a remount joins the request already running instead of starting a
+second one, and the response shown is the one actually generated for it (verified live: one
+`POST /api/daily/explain` per open, fresh on the first, green on the reopen). This is the
+client-side counterpart of the backend's per-key lock below, which the lock cannot provide
+from its side: it stops two requests from both reaching the LLM, but it cannot stop the second
+one from being *answered* — correctly — as a cache hit. Aborting was also dropped along the
+way: it never stopped the backend finishing and caching the work anyway, so it only ever
+changed what the client was told about it.
 
 **An open explanation always describes one specific date; changing the date closes it.**
 Reworded from "should the operator have to notice and close it themselves" to "no": the
@@ -606,6 +650,62 @@ redirects the shared `LLMService` singleton's cache file to a throwaway path and
 usage logging for every test, so no future test — mocked or not — can leave a trace in either
 real project file again.
 
+**What the per-call log cannot see — and the authoritative figure that can.** That row-per-call
+log only ever records calls made *through this running application*. It never saw a call made
+by the test suite (which disables the tracker on purpose, above, so a test run cannot land in a
+real expense file), and it can never see anything else spending tokens on the same API key —
+another tool, another machine, a colleague. Those are real money, and for a while they were
+simply invisible: the workbook read as the whole bill when it was only the part this app
+happened to be running for.
+
+So the workbook now also carries what the provider itself reports, which is the figure that
+actually gets billed:
+
+```bash
+python llm_usage_tracker.py sync            # last 30 days (OPENAI_USAGE_DAYS)
+python llm_usage_tracker.py sync --days 60
+```
+
+| Sheet | What it is | Where it comes from |
+|---|---|---|
+| **LLM Usage** | one row per real call this app made, with how long it took | this application, as each call completes |
+| **OpenAI Usage** | tokens and requests per day and per model | `GET /v1/organization/usage/completions` |
+| **Reconciliation** | the two side by side per day, with the difference and the day's cost | both, plus `GET /v1/organization/costs` |
+
+The Reconciliation sheet is the point of it: a `Requests not logged` column that states, per
+day, how much usage was billed that never reached the per-call sheet. On a day of development
+that number is large and completely expected — it is the test runs and the verification calls
+— and it is stated as a fact rather than left to be inferred from a total that looked too
+small.
+
+**It needs an admin key, and deliberately not the application's own.** `OPENAI_ADMIN_KEY` in
+`backend/.env` (Organization → Admin keys, `sk-admin-…`) is a *different* key from `LLM_API_KEY`:
+organisation usage and cost are admin-scoped endpoints that refuse an ordinary project key, and
+keeping them apart means the key that can read the whole organisation's spend is not the one
+travelling in a request header on every explanation. With no admin key configured the sync does
+nothing except explain, in full, what to set and where — it never guesses, never partially
+writes, and never falls back to estimating from the per-call rows. `OPENAI_USAGE_DAYS`,
+`OPENAI_USAGE_PROJECT_IDS` and `OPENAI_USAGE_BASE_URL` are the remaining knobs; nothing is
+hardcoded.
+
+Three properties worth stating, because each one is a way this could have quietly lied:
+
+* **the sync rewrites, it never appends** — re-syncing an overlapping window replaces those
+  days rather than double-counting them, while the per-call sheet stays append-only and is
+  never touched by a sync;
+* **every page is followed** — the API returns time buckets a page at a time, and stopping at
+  the first page would under-report a long window, which is exactly the failure this feature
+  exists to remove;
+* **a day with no reported cost is left blank, not zero** — the two mean different things, the
+  same rule this project applies to a withheld quantity total everywhere else.
+
+The key is never printed, never logged and never written to the workbook; a `401`/`403` is
+reported as "that key was refused, and here is the kind of key this needs" with no token in the
+message, and `SecretRedactingFilter` (§11) already matches the `sk-admin-…` shape should one
+ever reach a log record by accident. The tracker stays otherwise independent: the sync is the
+one network call it makes, it happens only when explicitly invoked, and it still imports
+nothing from `backend/` or `frontend/` — plain `urllib`, no new dependency.
+
 ---
 
 ## 11. Read-only guarantee
@@ -646,10 +746,13 @@ without such a layer in front of it.
 
 ## 12. Performance
 
-* One day costs **two queries**, both filtered in SQL by report date and live wells.
+* One day costs **two queries**, both filtered in SQL by report date and live wells, plus
+  **one** for the front page's per-well task activity (§19) and **one** more only if a well's
+  task list is actually expanded — that one covers every well at once, not the expanded one.
 * The resolved day is held in a short TTL cache (`DAILY_CACHE_TTL_SECONDS`), so every
-  drill-down level — group, status, well, task — is served from it. There is **no query per
-  well**; a test asserts this.
+  drill-down level — group, status, well, task — is served from it; the task-activity
+  evidence is cached the same way and for the same reason. There is **no query per
+  well**, anywhere; tests assert this for both.
 * Quantities cross the wire as exact decimal strings, so no float rounding is introduced
   between SQL Server and the browser.
 * Aborted `fetch` requests mean a rapid date change can never leave stale data on screen.
@@ -932,6 +1035,14 @@ component:
   threshold to configure or reason about here (contrast `DETAIL_VIEW_TASK_THRESHOLD`, §12/§13,
   which is a backend decision about a different question — grouped vs. individual dataset
   shape — and is independent of this).
+* **A figure on the front page expands where it stands; it never becomes a page.** A well
+  row's task-activity figures (§19) each open the tasks behind them *inside that same well's
+  card*, with the well named in the heading of what opens, so an expanded list can never be
+  read as belonging to the row above or below it. This is the same principle as the inline
+  explanation panel: the detail appears next to the number it explains, and the operator
+  never loses their place in the list. It is also why the counts are aggregated in SQL rather
+  than shipped as rows — the front page shows 1,468 incomplete tasks as one figure per well,
+  and fetches the individual tasks only for the one well actually expanded.
 * **Planned, Actual and Progress are always grouped as one unit.** `QuantityTrio`
   (`frontend/src/components/common/index.jsx`) renders the three together in a single boxed
   row; `WellDetail.jsx`'s per-task panel uses it instead of listing the three as separate rows
@@ -1046,3 +1157,200 @@ for feedback — its `evidence.crew_suggestion` carried `eligible: false` with a
 reason for transparency, and a populated `consult_crew`; a completed task's summary made no
 crew mention of any kind; and an old report date's evidence was confirmed to stop at that
 date's own historical cutoff rather than reflecting a crew's later success.
+
+---
+
+## 19. Well task activity on the front page
+
+The brief answers *what did each well do today*. It now also answers, on the same row,
+*where does that well's work stand at all* — how much of it is unfinished, how much is
+under way, whether the well reported anything today, and when it was last seen in the
+records. Those are different questions about different spans of time, and the row keeps
+them visibly apart rather than blending them into one number.
+
+```
+Well 10239 · Pipe Stringing +7 more · 14 tasks · [10 On Plan] [3 Below Plan] [1 No Actual]   [AI summary]
+  31 Open   12 Incomplete   19 Ongoing   14 Reported today   Last task date 2026-08-01
+```
+
+**The figures beside the total add up to it.** `Open` is every task not recorded as
+completed; `Incomplete` and `Ongoing` are its two halves and never overlap, so
+`open = incomplete + ongoing` and a reader can add what they see. An earlier version had
+`Incomplete` count every open task with `Ongoing` as a subset of it, so a row reading "48
+incomplete, 24 ongoing" described 48 open tasks rather than 72 and nothing on the row said
+which. "Incomplete" therefore now means *open but not ongoing*: no recorded actual start, or
+an actual end recorded without completion. Every level keeps the same arithmetic — the well
+row, the expandable task lists behind each figure, the AI evidence, and the day-scope
+overview's `open_total = incomplete_total + ongoing_total`. Live check on 2026-09-17: across
+269 wells, `2,008` open = `782` incomplete + `1,226` ongoing, and no single well's row broke
+the identity.
+
+**The well universe is `well.well_master`, not one day's task rows.** A live well
+(`eng_completion_date IS NULL`, business_rules.md §7) is on this page whether or not it
+reported anything on the selected date — which is exactly when "0 reported today, last seen
+on `2026-07-14`" is worth an operator's attention. A `task_daily` row never creates a well:
+`sql/well_task_state.sql` runs from `well_master` into `task_daily` through
+`TRY_CONVERT(int, td.well_id)` (§3), so a row whose `well_id` does not resolve to a live well
+has nowhere to attach. A well with no task record at or before the date returns no row at
+all, rather than a row of zeroes claiming it was measured.
+
+**One logical task is `(well_id, schedule_id, task_code)`**, and its state as of the report
+date is its latest daily record under `ActionOn DESC, updated_at DESC, id DESC`, restricted
+to `ActionOn <= report_date` — the same "latest logical state" grain §18's availability
+signal already uses. A row dated after the report date can therefore never reach back into
+an older one. The same `task_code` under two `schedule_id`s is two tasks, not a duplicate,
+and both the expandable detail and the AI evidence carry the schedule id so the pair can be
+told apart.
+
+**Task state comes from the task's own state columns, never from `progress`.** Four states,
+mutually exclusive and covering every task, so a count over them can neither double-count
+nor lose one:
+
+| State | Condition | Counted in |
+|---|---|---|
+| `COMPLETED` | `completed = 1` | — |
+| `ONGOING` | not completed, `actual_start` recorded, `actual_end` not recorded | Ongoing |
+| `NOT_STARTED` | not completed, no `actual_start` | Incomplete |
+| `ENDED_NOT_COMPLETED` | not completed, yet an `actual_end` is recorded | Incomplete |
+
+`task_daily.progress` is **not read anywhere in this feature** — not as a filter, not as a
+tie-break, not in the payload. Its unit is undefined (§9): observed values run from −0.05 to
+66.7, so it is not a percentage and cannot say whether a task is finished or under way. A
+test asserts the column does not appear in either query at all, which is a stronger guarantee
+than asserting it is used correctly. `startDate`/`endDate` are likewise never read: a planned
+schedule is not evidence that work is physically happening. `ONGOING` is deliberately the
+full three-part condition — `actual_end IS NULL` on its own also matches a task that has
+never started.
+
+`ENDED_NOT_COMPLETED` is reported as its own state rather than folded into either neighbour.
+The record says both things — an end date, and not completed — and no rule in either rules
+file resolves that, so it is shown as it stands rather than guessed at. It is not called an
+error.
+
+**`Last task date` is `MAX(ActionOn)` on or before the report date, and is never called
+anything else.** It means: the latest date this well appeared in the task-daily data. It is
+not a completion date, not a finish date, and not "when work stopped" — no column in this
+schema is approved as a construction actual completion date (business_rules.md §10), so none
+is substituted here. The label, the tooltip and the system instruction all say the same
+thing.
+
+**`Reported today` reuses the grain that already exists.** The count of logical tasks a well
+reported on the date itself is read from the day's already-resolved dataset
+(`sql/daily_tasks.sql`'s one-ranked-row-per-`(well_id, schedule_id, task_code, ActionOn)`
+grain, §4), not re-derived by a second query with a subtly different rule. So it is, by
+construction, the same number as that well's task count and its drill-down — a live test
+asserts the two agree for every well — and repeated planning snapshots of one task are never
+counted twice.
+
+**Cost: one extra query per report date, and one more only if a task list is expanded.**
+`sql/well_task_activity.sql` aggregates every count in SQL and returns one row per well
+(measured: 252 rows, ~0.9 s warm). The tasks behind those counts come from
+`sql/well_task_activity_detail.sql` — every well's incomplete tasks in one query, loaded the
+first time any row is expanded and then cached for the date, so expanding a second, third and
+fourth well costs nothing further. Both are cached under the same `DAILY_CACHE_TTL_SECONDS`
+discipline as the daily dataset and are dropped by the same "Refresh" that reloads it, so the
+two halves of a well row can never be from different loads. **There is no query per well**, and
+a test asserts it.
+
+**The whole-view summary sees every live well, not just the ones that reported.** "Explain
+this view" used to describe only the day's own task rows — on 2026-09-17 that is one well and
+one task, while 268 other live wells carried 2,008 unfinished tasks it had no way of knowing
+about, and the summary read as though the day were about that single well. A day-scope
+payload now also carries `live_well_task_activity`: how many live wells have task evidence,
+how many reported on the date and how many did not, how many carry incomplete or ongoing
+work, the totals behind those, and a bounded list of the wells carrying the most open work
+(ranked by incomplete then ongoing count, `well_id` breaking ties so the sample — and the
+evidence hash behind the cache — is stable). Attached to the whole view only: a request
+narrowed to a status, WBS, activity, unit or well is explaining a slice of what was reported,
+and every live well's open work is a different population than the one in scope.
+
+**A scope with no entry for the date gets a summary of its own, not one full of zeroes.** The
+usual summary block — `well_count`, five status counts, quantity totals — is all zeroes for a
+well that reported nothing, which is true and useless, and the model read it out loud:
+explaining well `31425`, it opened with *"there are 0 wells and 0 tasks in scope"*, describing
+the shape of the payload rather than the well. There is exactly one fact to state, so the
+payload now carries exactly that — `no_daily_entry` with a plain note — and drops the status
+definitions and the empty task list with it. The system instruction adds that a single-well
+scope must never mention a well count at all, that no figure may be introduced by naming the
+block it came from, and that a task reported with `NO_ACTUAL` is still a task that was
+reported — a v13 answer had conflated the two and said a well that *had* reported "did not
+report any activity".
+
+**What the AI is given, and what it is not.** A well-scoped explanation's evidence gains a
+`well_task_activity` block: the counts, the four state totals, a bounded sample of the
+*ongoing* tasks (the rest of the states stay as counts), the plain meaning of every figure,
+and the constraints on what may not be said about them. The model explains those values; it
+never derives one. The system instruction adds that a zero reported-task count means no task
+was recorded that day and nothing more — not an idle well, not a failure to report — that
+`last_task_date` is not a completion date, and that no task or well may be described as
+delayed, late, overdue or behind schedule, because no rule in this system defines any of
+those. `_PROMPT_VERSION` is bumped accordingly at each such change (12 for this block, 13 for the
+day-scope overview and the empty-scope summary, 14 for the `NO_ACTUAL` and field-naming
+rules), so no answer cached under an older prompt — which was never told how to read what it
+is being shown — can be served for it.
+
+**Showing the working: three drawers under every explanation.** A count an operator cannot
+check is a count they have to trust, so the panel carries the working beside the prose — all
+three collapsed, because the panel is for reading and the working is there for the moment
+someone wants to check it:
+
+| Drawer | What it shows |
+|---|---|
+| **What is sent to AI model for summary** | the evidence payload itself, byte for byte what the model was given |
+| **SQL** | the queries those figures came from, as executed, with the report date listed beside each one as the bound parameter it is |
+| **Proof** | every task counted as incomplete, which of them the narrower ongoing definition also counts, and why |
+
+The proof table is one row per incomplete task — well, task code, schedule id, description
+(or "Not mapped", never a substitute), whether it counts as incomplete, whether it counts as
+ongoing, its actual start, its actual end, and the last date it appears in the records — with
+the **reason on its own full-width line beneath it**: *"Not completed (latest record
+`2026-08-12`), although an actual end of `2026-08-12` is recorded. Both are reported as they
+stand; it is not counted as ongoing."* That sentence is assembled from the record's own three
+columns and nothing else; it is a restatement, never an interpretation. Verified against well
+`31425` on 2026-09-17: the evidence says 48 incomplete and 24 ongoing, and the proof table
+lists exactly 48 rows of which exactly 24 are marked ongoing, so the arithmetic on the well's
+row can be checked by hand.
+
+The reason started life as a tenth column and was moved: at that width it was pushed off the
+edge of the table, and constrained to a tenth of the width it wrapped into an unreadable
+ribbon. It is the column the drawer exists for, so it gets the full width.
+
+**The model is given none of it.** `sql_sources` and `proof` travel in the API response but
+never enter the evidence payload — a test asserts the LLM call contains neither. The model's
+job is to explain figures SQL already decided; handing it the query would invite it to reason
+about the query instead, which is the one thing §10's boundary exists to prevent. The SQL text
+is the shipped `.sql` file with its `{{include:…}}` expanded — the same string handed to the
+driver — and carries no credential or connection string, because those files contain none; the
+report date is listed as `? 1  report date = 2026-09-17` beside the query rather than spliced
+into it, which is exactly how it is sent.
+
+**A well with nothing reported today can still be explained.** Its daily-task summary is
+genuinely empty, and the evidence says so in those words — *"no daily task was recorded …
+this is not a zero quantity; it is an absence of any entry"* — rather than withholding the
+totals under the multi-unit rule (§6), which would be a different and untrue reason.
+
+**Front-page scope, and why it is a filter and not a cut.** Listing every live well with any
+task history puts ~250 rows on the first screen, most of them dormant. The toolbar therefore
+offers three scopes — *reporting or open work* (the default: reported on the date, or has at
+least one incomplete task), *reported on this date*, and *all* — with the count on each. This
+only decides which wells are listed; it never changes, hides or recalculates a figure on a
+row it does show, and no well is dropped from the data, only from the first screen.
+
+**Verified against the live `AlTasnimBI` database.** On 2026-08-01: 252 live wells carry task
+evidence, 79 of them reported a task that day and 173 did not; 1,468 incomplete logical tasks
+across them. Well `10239` — 59 logical tasks, 31 completed, 28 open (16 ongoing, 12
+incomplete: 5 not started and 7 ended-not-completed), 5 reported that day. On 2026-09-17, well `31425` reported
+nothing, had 48 open tasks — 24 incomplete and 24 ongoing — and was last seen on
+`2026-08-17`; its
+AI summary described exactly that and said plainly that no task being reported does not mean
+work has stopped. Every well's "reported today" figure matched the day's own per-well task
+count.
+
+**A determinism bug caught by the cache, and fixed.** The first version of
+`well_task_activity_detail.sql` ordered by `(well_id, task_state, task_code)`, which leaves
+two tasks sharing a `task_code` under different `schedule_id`s free to come back either way
+round. A sample of those rows goes into the AI evidence, whose SHA-256 is the explanation
+cache's key (§10) — so the same well, explained twice, hashed differently and paid for a
+second, identical LLM call. Observed exactly that way against the live database. `schedule_id`
+is now the final ordering key, and a test asserts both the ordering and that two consecutive
+evidence builds serialise identically.

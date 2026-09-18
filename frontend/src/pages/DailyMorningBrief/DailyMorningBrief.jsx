@@ -69,6 +69,23 @@ export default function DailyMorningBrief() {
     [reportDate, refreshToken],
   )
 
+  /**
+   * The other half of each well row: its task activity as of the selected
+   * date -- incomplete tasks, ongoing tasks, whether it reported anything on
+   * the date, and when it was last seen in the task records. Computed
+   * entirely by the backend over the live well universe, not over one date's
+   * task rows, which is why a well with nothing to report today is still on
+   * the page.
+   *
+   * Depends on `refreshToken` for exactly the same reason `wellsForDay` does:
+   * these figures sit on the same rows, so "Refresh" must reload both or the
+   * two halves of a row would be from different loads.
+   */
+  const wellActivity = useApiResource(
+    (signal) => api.wellActivity({ date: reportDate, refresh: refreshToken > 0 }, signal),
+    [reportDate, refreshToken],
+  )
+
   const openWell = useCallback(
     (wellId) => {
       setExplainRequest(null)
@@ -130,7 +147,12 @@ export default function DailyMorningBrief() {
         <ExplainPanel request={explainRequest} onClose={() => setExplainRequest(null)} />
 
         {!current ? (
-          <SummaryLevel resource={wellsForDay} reportDate={reportDate} onSelectWell={openWell} />
+          <SummaryLevel
+            resource={wellsForDay}
+            activityResource={wellActivity}
+            reportDate={reportDate}
+            onSelectWell={openWell}
+          />
         ) : current.type === 'milestones' ? (
           <MilestonesPage resource={milestones} />
         ) : (
@@ -164,12 +186,22 @@ function Breadcrumbs({ crumbs, onNavigate }) {
   )
 }
 
-function SummaryLevel({ resource, reportDate, onSelectWell }) {
+function SummaryLevel({ resource, activityResource, reportDate, onSelectWell }) {
   if (resource.loading) return <LoadingBlock />
   if (resource.error) return <ErrorState error={resource.error} onRetry={resource.reload} />
   if (!resource.data) return null
 
-  return <WellList resource={resource} reportDate={reportDate} onSelectWell={onSelectWell} />
+  // The day's own rollup decides whether this level can render at all; the
+  // task-activity call is additive, so its own loading/error state is reported
+  // inside the list rather than replacing the whole page with an error.
+  return (
+    <WellList
+      resource={resource}
+      activityResource={activityResource}
+      reportDate={reportDate}
+      onSelectWell={onSelectWell}
+    />
+  )
 }
 
 function WellLevel({ step, reportDate }) {

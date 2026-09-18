@@ -19,7 +19,7 @@ from app.models.daily import DayCounters
 from app.services.crew_suggestion_service import CrewSuggestionService
 from app.services.daily_service import DailyService
 from app.services.llm_service import LLMService
-from tests.conftest import REPORT_DATE, make_row
+from tests.conftest import REPORT_DATE, make_row, stub_well_activity_service
 
 ROWS = [make_row(task_daily_id=1, well_id=101, task_code="AAAA0001-101", planned=10, actual_quantity=10)]
 
@@ -70,10 +70,12 @@ def wired_client(monkeypatch):
 
     daily_service = DailyService(repository=StubRepository(ROWS))
     llm_service = CapturingLLMService()
+    activity_service = stub_well_activity_service()
     monkeypatch.setattr(dependencies, "_daily_service", daily_service)
     monkeypatch.setattr(dependencies, "_llm_service", llm_service)
     app.dependency_overrides[dependencies.get_daily_service] = lambda: daily_service
     app.dependency_overrides[dependencies.get_llm_service] = lambda: llm_service
+    app.dependency_overrides[dependencies.get_well_activity_service] = lambda: activity_service
 
     def _make(evidence: Optional[Dict[str, Any]]):
         crew_service = StubCrewSuggestionService(evidence)

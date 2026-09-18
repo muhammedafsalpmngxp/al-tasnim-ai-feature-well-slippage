@@ -14,5 +14,14 @@ export default defineConfig(({ mode }) => {
         '/api': { target, changeOrigin: true },
       },
     },
+    // Component tests run in jsdom, offline: they render a component with
+    // fixed backend responses and assert what an operator would see. No test
+    // here reaches the API, the database or the LLM.
+    test: {
+      environment: 'jsdom',
+      globals: true,
+      setupFiles: ['./src/test/setup.js'],
+      include: ['src/**/*.test.jsx'],
+    },
   }
 })

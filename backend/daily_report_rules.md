@@ -11,7 +11,9 @@ responsibility, well lifecycle dates, milestone deadlines, schedule variance, PM
 — live in `business_rules.md` instead. Nothing here overrides or repeats those; a live well,
 for instance, is still defined by `business_rules.md`'s well-completion rule (its §7), not
 redefined here. This file covers only what is specific to classifying and displaying one
-day's task entries: actual vs. planned, UOM, progress, mapping, and data quality.
+day's task entries: actual vs. planned, UOM, progress, mapping, and data quality — plus, in
+§9, how a live well's own tasks are counted and described alongside that day on the front
+page.
 
 ## 1. Column dictionary
 
@@ -364,7 +366,105 @@ choices, not an authoritative workforce rule from anywhere else in this system.
     parameters `sql/crew_suggestion.sql` takes; no well, project, WBS, activity, task or crew
     identifier is ever hardcoded anywhere in this feature.
 
-## 9. Strict instructions
+## 9. Well task activity
+
+How a live well's own tasks are counted and described on the front page and in its AI
+summary. Rules marked **V1 derived** are this feature's presentation choices, not an
+authoritative rule from elsewhere in this system. Nothing here changes §4 (quantity status):
+that classifies one day's reported quantity, this describes where a well's tasks stand.
+
+1. **The well universe is `well.well_master`, never `task_daily`.** A live well is defined by
+   `business_rules.md` §7 (`eng_completion_date IS NULL`) and is listed whether or not it
+   reported a task on the selected date. A `task_daily` row never creates a well: the join
+   runs from `well_master` into `task_daily` through `TRY_CONVERT(int, td.well_id)` (§1), and
+   `well_id <= 1` is excluded exactly as everywhere else. A live well with no task record at
+   or before the report date returns no row — not a row of zeroes, which would claim it had
+   been measured.
+2. **One logical task is `(well_id, schedule_id, task_code)`.** Its state as of the report
+   date is its latest daily record ordered `ActionOn DESC, updated_at DESC, id DESC`, taken
+   only from rows with `ActionOn <= report_date`. A row dated after the report date never
+   affects an earlier one. The same `task_code` under two `schedule_id`s is **two tasks**,
+   not a duplicate; the schedule id is carried everywhere the pair could otherwise be
+   mistaken for one row.
+3. **Task state is read from the task's own state columns.** Four states, mutually exclusive
+   and covering every task:
+
+   | State | Condition | Counted in |
+   |---|---|---|
+   | `COMPLETED` | `completed = 1` | — |
+   | `ONGOING` | not completed, `actual_start` recorded, `actual_end` not recorded | Ongoing |
+   | `NOT_STARTED` | not completed, no `actual_start` | Incomplete |
+   | `ENDED_NOT_COMPLETED` | not completed, yet an `actual_end` is recorded | Incomplete |
+
+   `ENDED_NOT_COMPLETED` is reported as itself. The record says both things and no rule
+   resolves them, so the condition is exposed rather than guessed at — the same discipline
+   `NOT_VALIDATED` follows in §4. It is not an error.
+4. **`task_daily.progress` is never read by this feature at all** — not as a filter, not as a
+   tie-break, not in the payload. Its unit is undefined (§7), so it cannot say whether a task
+   is finished or under way. This is stricter than §8's crew-suggestion rule, which uses it as
+   a `> 0` signal: here it is not used at all.
+5. **`startDate` / `endDate` are never read as proof of work either.** A planned schedule is
+   not evidence that work is physically happening. Only `actual_start` / `actual_end` are.
+6. **`actual_end IS NULL` alone is not "ongoing".** It also matches a task that has never
+   started. `ONGOING` always requires all three conditions in rule 3.
+7. **The reported figures are disjoint and add up (V1 derived).**
+
+       open        = every task whose latest record does not say completed
+       incomplete  = open AND NOT ongoing  (NOT_STARTED + ENDED_NOT_COMPLETED)
+       ongoing     = open AND actual_start recorded AND no actual_end
+
+   so `open = incomplete + ongoing`, and `logical = open + completed`. No task is ever
+   counted in both figures shown beside each other. "Incomplete" therefore means open but
+   not ongoing — it is **not** a synonym for "not completed", which is `open`. An earlier
+   version had incomplete include the ongoing tasks, so the two numbers on a well's row
+   overlapped and could not be added.
+8. **`last_task_date` is `MAX(ActionOn)` on or before the report date**: the latest date the
+   well appears in the task-daily data. It is **not** a completion date, a finish date, or
+   the date work stopped, and must never be labelled or described as one — no column is
+   approved as a construction actual completion date (`business_rules.md` §10).
+9. **The report-date task count reuses §3's grain**, read from the day's already-resolved
+   dataset rather than re-derived: repeated planning snapshots of one task are never counted
+   twice, and the figure is by construction identical to that well's task count elsewhere in
+   the brief. Zero means no task was recorded for that well on that date — nothing more.
+10. **SQL and Python calculate every figure; the model only explains them.** The counts, the
+    state classification, the dates and the samples are computed in
+    `sql/well_task_state.sql`, `sql/well_task_activity.sql`,
+    `sql/well_task_activity_detail.sql` and `app/services/well_activity_service.py`. React
+    displays what it is given. The LLM receives the finished figures, their plain meaning and
+    a bounded sample of the ongoing tasks, and derives nothing.
+11. **Nothing here is described as late (V1 derived).** No rule in this system defines when a
+    task is delayed, overdue, behind schedule or at risk, so no task and no well is ever
+    described that way — consistent with §7's "cause" and "accountability" rules. A well that
+    reported nothing on a date is stated as exactly that, never as idle, stalled or failing to
+    report.
+12. **The whole-view summary covers the same universe this file defines (V1 derived).** The
+    day-scope explanation is given the live-well figures above — how many wells have task
+    evidence, how many reported on the date, how many carry incomplete or ongoing work —
+    alongside the day's own reported tasks, and the two are kept apart: one is what was
+    entered on this date, the other where every live well's tasks stand as of it. A request
+    narrowed to a status, WBS, activity, unit or well is explaining a slice of the day's
+    reported tasks and is **not** given the well universe, which would be a different
+    population than the one in scope.
+13. **An absence of entries is stated as itself, never as a row of zeroes.** A scope with no
+    daily task on the report date carries one plain statement to that effect — not a zeroed
+    well count, zeroed status counts and withheld quantity totals, which are true of an empty
+    selection but describe the payload rather than the well. A single-well scope never reports
+    a well count at all. A task reported with `NO_ACTUAL` **was** reported: an entry carrying
+    no actual quantity and a well that recorded nothing that day are separate facts and must
+    never be merged.
+14. **Every count is checkable (V1 derived).** A well's AI summary carries, beside the
+    explanation, the evidence the model was given, the queries the figures came from as they
+    are executed, and one row per incomplete task stating whether it is also counted as
+    ongoing and why. The "why" is assembled from that task's own `completed`, `actual_start`
+    and `actual_end` values and nothing else -- a restatement of the record, never an
+    interpretation of it. Neither the queries nor the proof rows are ever sent to the LLM:
+    it explains figures SQL already decided, and giving it the query would invite it to
+    reason about the query instead (rule 10).
+15. **No hardcoded business values.** The report date is the only parameter these queries
+    take, bound once; no well, project, WBS, activity, task, crew or date is hardcoded
+    anywhere in this feature.
+
+## 10. Strict instructions
 
 * These rules are authoritative for every question about a daily task's quantity status,
   UOM, activity/WBS/crew mapping, or data quality.

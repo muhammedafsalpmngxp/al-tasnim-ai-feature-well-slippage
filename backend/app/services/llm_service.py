@@ -125,6 +125,70 @@ reported actual quantity is below the planned quantity", never "the crew \
 underperformed". Never convert between units of measure. Keep the response \
 under 220 words.
 
+When "summary" carries "no_daily_entry", nothing was recorded for this \
+selection on this report date. Say that in one plain sentence and move on to \
+whatever else the evidence carries. When the selection is a single well, never \
+mention a well count at all -- there is one well, it is the one being \
+explained, and saying "0 wells" about it is both confusing and wrong.
+
+Never read the shape of the payload out loud. Do not write "0 wells and 0 \
+tasks in scope", do not recite a list of zeroed status counts, and never \
+introduce a figure by naming the block it came from -- not "the summary \
+indicates", "the task state summary shows", "the evidence lists" or anything \
+of that shape. State the fact itself, the way a person reading the record \
+would say it out loud.
+
+A task reported with no actual quantity is still a task that was reported. \
+`NO_ACTUAL` means the entry carries no actual quantity, NOT that the well \
+reported nothing that day -- a well with a reported task must never be \
+described as having reported no activity, and the two are separate facts that \
+must never be merged into one sentence.
+
+When the evidence includes a "live_well_task_activity" object, it covers \
+EVERY live well with a task record as of the report date -- not only the \
+wells that reported something on it. Use it to describe the standing position \
+behind the day: how many live wells have unfinished tasks, how many of those \
+reported nothing on the date, and how much work that adds up to. Its \
+open_total is incomplete_total plus ongoing_total, which do not overlap -- \
+the same split each well row shows. Keep it \
+clearly apart from the day's own reported figures above it: one describes \
+what was entered on this date, the other where every live well's tasks stand. \
+A day with one reported task and hundreds of wells carrying open work is an \
+ordinary thing to describe plainly, not a problem to raise. The wells in \
+"wells_with_most_open_work" are examples only, chosen for carrying the most \
+unfinished tasks; the counts beside them cover every well, so never describe \
+the day as if it were about only the wells you name, and never total, rank or \
+compare them yourself beyond the order given. A well appearing there with no \
+task reported on the date means exactly that -- no entry that day -- never \
+that it is idle, abandoned, delayed or behind.
+
+When the evidence includes a "well_task_activity" object, it describes where \
+that one well's tasks stand overall as of the report date -- not what it did \
+on the date alone. Every figure in it was already calculated: never add, \
+subtract, compare or re-derive one, and never turn one into a percentage or a \
+share. Read the "definitions" it carries and say what each figure means in \
+plain words rather than naming the field. today_reported_task_count is how \
+many tasks the well reported on the selected date, and zero means simply that \
+no task was recorded for it that day -- never that work stopped, that the \
+well is idle, or that someone failed to report. open_task_count counts \
+every task whose latest record does not say completed, and it splits into two \
+figures that do NOT overlap: incomplete_task_count (open but not ongoing \
+-- no recorded actual start, or an actual end recorded without \
+completion) and ongoing_task_count (a recorded actual start and no recorded \
+actual end). Incomplete and ongoing add up to open, so never call ongoing a \
+subset or a part of incomplete, never describe one task as counting toward \
+both, and never add, subtract or re-derive these figures yourself -- each is \
+already exactly what it says. last_task_date is the latest date the well appears in \
+the task records: say it that way, and never call it a completion date, a \
+finish date, or the date work stopped. A task listed as ended without being \
+completed is exactly that -- the record carries an end date and does not say \
+completed -- so report both halves and do not resolve the two yourself. \
+Never describe a task or a well as delayed, late, overdue, stalled, behind \
+schedule or at risk: no rule in this system defines any of those, and no \
+evidence here establishes one. Never suggest what should be done about the \
+well. A well with tasks but none reported on the selected date is an ordinary \
+case worth one plain sentence, not a concern to raise.
+
 When the evidence includes a "crew_suggestion" object, it is deterministic \
 evidence about this one task only -- calculated entirely by SQL/Python, \
 never by you. It is advisory only: never describe it as an assignment, a \
@@ -294,7 +358,30 @@ class LLMUnavailable(RuntimeError):
 #: consult_crew's "worth consulting for feedback" framing instead of
 #: presenting the crew as a possible alternative for the task itself --
 #: suggested_crew now has its own explicit closing template.
-_PROMPT_VERSION = 11
+#: v12: a well-scoped evidence payload now carries a "well_task_activity"
+#: block (incomplete / ongoing task counts, whether anything was reported on
+#: the report date, the last task date) that a v11-cached explanation was
+#: never told how to read -- including the rules that a zero reported-task
+#: count is not an idle well and that last_task_date is not a completion date.
+#: v13: two things a v12 answer got wrong, both seen live. A day-scope payload
+#: now carries "live_well_task_activity" -- every live well's open work, not
+#: just what was reported that day -- which v12 was never given, so its
+#: whole-view summary could only describe the one well that happened to
+#: report. And a scope with no entry for the date now carries a summary of
+#: its own instead of one full of zeroes, because v12 read those zeroes out
+#: loud: explaining one well, it opened with "there are 0 wells and 0 tasks in
+#: scope".
+#: v14: two slips a v13 answer made on the very first real day it saw. It
+#: described a well that HAD reported a task as having "did not report any
+#: activity", having read that task's NO_ACTUAL status as an absent entry;
+#: and it still introduced figures by naming the block they came from ("the
+#: task state summary indicates...") rather than simply stating them.
+#: v15: "incomplete" changed meaning. It used to count every not-completed
+#: task, with ongoing as a subset of it, so the two figures on a well's row
+#: overlapped and could not be added. They are now disjoint -- open =
+#: incomplete + ongoing -- and a v14 answer would describe the new numbers
+#: under the old relationship, calling ongoing a subset of incomplete.
+_PROMPT_VERSION = 15
 
 
 def _evidence_hash(evidence: Dict[str, Any]) -> str:

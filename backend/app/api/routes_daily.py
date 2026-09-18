@@ -13,6 +13,7 @@ from app.api.dependencies import (
     get_daily_service,
     get_grouping_service,
     get_llm_service,
+    get_well_activity_service,
     load_dataset,
     parse_report_date,
 )
@@ -25,12 +26,15 @@ from app.schemas.daily import (
     DayTotalsOut,
     DetailResponse,
     GroupDetailsResponse,
+    LogicalTaskOut,
     RecentDateOut,
     RecentDatesResponse,
     StatusGroupOut,
     SummaryResponse,
     TaskOut,
     WbsGroupOut,
+    WellActivityResponse,
+    WellTaskActivityOut,
     WellTaskSummaryOut,
 )
 from app.services.daily_service import DailyService
@@ -41,6 +45,7 @@ from app.services.grouping_service import (
     WbsGroup,
 )
 from app.services.llm_service import LLMService
+from app.services.well_activity_service import WellActivityService
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +110,7 @@ def get_summary(
     service: DailyService = Depends(get_daily_service),
     grouping: GroupingService = Depends(get_grouping_service),
     llm_service: LLMService = Depends(get_llm_service),
+    activity_service: WellActivityService = Depends(get_well_activity_service),
 ) -> SummaryResponse:
     """Grouped daily summary for the selected date (Dataset A).
 
@@ -119,7 +125,10 @@ def get_summary(
         # The dataset for this date is about to be reloaded from scratch; any
         # cached AI explanation was computed against the old data and must not
         # outlive it, even in the rare case where the reload happens to come
-        # back byte-identical.
+        # back byte-identical. The well list's task-activity evidence is part
+        # of the same screen and is dropped in the same breath, so a refresh
+        # can never leave one half of a well row newer than the other.
+        activity_service.invalidate(report_date)
         llm_service.invalidate_date(report_date)
     dataset = load_dataset(service, report_date, refresh=refresh)
     status_groups = grouping.build(dataset)
@@ -183,6 +192,7 @@ def get_group_details(
     refresh: bool = Query(False, description="Bypass the server-side cache"),
     service: DailyService = Depends(get_daily_service),
     llm_service: LLMService = Depends(get_llm_service),
+    activity_service: WellActivityService = Depends(get_well_activity_service),
 ) -> GroupDetailsResponse:
     """The wells and tasks behind one summary figure -- called with no filter
     at all, this is also the whole day's per-well rollup that drives the main
@@ -193,6 +203,7 @@ def get_group_details(
     dashboard traceable to the records that produced it.
     """
     if refresh:
+        activity_service.invalidate(report_date)
         llm_service.invalidate_date(report_date)
     dataset = load_dataset(service, report_date, refresh=refresh)
     try:
@@ -260,6 +271,96 @@ def _well_summaries(tasks: List[DailyTask]) -> List[WellTaskSummaryOut]:
             )
         )
     return summaries
+
+
+@router.get("/well-activity", response_model=WellActivityResponse)
+def get_well_activity(
+    report_date: date = Depends(parse_report_date),
+    well_id: Optional[int] = Query(
+        None,
+        description=(
+            "Restrict to one well and include the incomplete logical tasks "
+            "behind its counts. Omit for the whole live-well universe."
+        ),
+    ),
+    refresh: bool = Query(False, description="Bypass the server-side cache"),
+    service: DailyService = Depends(get_daily_service),
+    activity_service: WellActivityService = Depends(get_well_activity_service),
+    llm_service: LLMService = Depends(get_llm_service),
+) -> WellActivityResponse:
+    """Per-well task activity as of the selected report date.
+
+    One row per live well that has task evidence on or before the date:
+    incomplete and ongoing task counts, whether it reported a task on the date
+    itself, and the last date it appeared in the task-daily data. This is the
+    task-activity half of the front page's well list -- the well universe
+    comes from ``well.well_master``, so a well stays on the page on a day it
+    reported nothing.
+
+    ``well_id`` additionally returns that one well's incomplete tasks, for the
+    row's expandable detail. Both shapes are served from the same cached,
+    whole-universe evidence, so expanding well after well never turns into one
+    query per well.
+    """
+    if refresh:
+        # The same contract as /summary and /group-details: a deliberate
+        # refresh reloads this date's evidence and drops the AI explanations
+        # generated against the old copy, so the figures and the text
+        # describing them can never be from two different loads.
+        activity_service.invalidate(report_date)
+        llm_service.invalidate_date(report_date)
+
+    dataset = load_dataset(service, report_date, refresh=refresh)
+    wells = activity_service.wells_for_date(report_date, dataset, refresh=refresh)
+
+    tasks: List[LogicalTaskOut] = []
+    if well_id is not None:
+        wells = [well for well in wells if well.well_id == well_id]
+        tasks = [
+            _logical_task_out(task)
+            for task in activity_service.incomplete_tasks(report_date, well_id)
+        ]
+
+    return WellActivityResponse(
+        report_date=report_date,
+        well_count=len(wells),
+        wells=[_well_activity_out(well) for well in wells],
+        tasks=tasks,
+    )
+
+
+def _well_activity_out(activity) -> WellTaskActivityOut:
+    return WellTaskActivityOut(
+        well_id=activity.well_id,
+        today_reported_task_count=activity.today_reported_task_count,
+        has_task_on_report_date=activity.has_task_on_report_date,
+        open_task_count=activity.open_task_count,
+        incomplete_task_count=activity.incomplete_task_count,
+        ongoing_task_count=activity.ongoing_task_count,
+        not_started_task_count=activity.not_started_task_count,
+        ended_not_completed_task_count=activity.ended_not_completed_task_count,
+        completed_task_count=activity.completed_task_count,
+        logical_task_count=activity.logical_task_count,
+        task_state_counts=activity.task_state_counts,
+        last_task_date=activity.last_task_date,
+    )
+
+
+def _logical_task_out(task) -> LogicalTaskOut:
+    return LogicalTaskOut(
+        well_id=task.well_id,
+        schedule_id=task.schedule_id,
+        task_code=task.task_code,
+        task_state=task.task_state.value,
+        last_task_date=task.latest_action_on,
+        actual_start=task.actual_start,
+        actual_end=task.actual_end,
+        completed=task.completed,
+        activity_id=task.activity_id,
+        activity_code=task.activity_code,
+        activity_description=task.activity_description,
+        wbs=task.wbs,
+    )
 
 
 @router.get("/dates", response_model=RecentDatesResponse)

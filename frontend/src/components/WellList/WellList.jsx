@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import ExplainPanel from '../ExplainPanel/ExplainPanel'
 import StatusCount from '../StatusCount/StatusCount'
-import { EmptyState, Num, orderedStatuses, statusDescription } from '../common'
+import api from '../../services/api'
+import { EmptyState, Num, Spinner, orderedStatuses, statusDescription } from '../common'
 
 /**
  * The main dashboard view: one compact row per live well.
@@ -17,27 +18,65 @@ import { EmptyState, Num, orderedStatuses, statusDescription } from '../common'
  *   how many others, never every task inline. A well with many tasks is not
  *   handled specially; it simply always drills to its own detail page, the
  *   same click as any other well.
+ * * each row also carries that well's task activity as of the selected date --
+ *   its open tasks and the two disjoint halves that make them up (incomplete
+ *   and ongoing, which add up to the total), the tasks reported on the date
+ *   itself, and the last date the well appears in the records. Those come from
+ *   `/api/daily/well-activity`, aggregated in SQL over the well's whole task
+ *   history up to the date, and each one expands in place to show the tasks
+ *   behind it rather than opening another page.
  * * a click on the row opens that well's full detail (`WellDetail`), where
  *   every task is its own panel.
  * * "AI summary" is a second, independent control per row: it expands an
  *   explanation of that well's day in place, without leaving the list.
  *
+ * Because the well universe is `well.well_master` and not one date's task
+ * rows, a well stays on this page on a day it reported nothing -- which is
+ * exactly when "0 reported today, last seen three weeks ago" is worth seeing.
+ *
  * Every figure here is still backend-computed -- this component sums nothing
  * and reclassifies nothing. It only decides how much of what the backend
  * already returned belongs on the front page.
  */
-export default function WellList({ resource, reportDate, onSelectWell }) {
+export default function WellList({ resource, activityResource, reportDate, onSelectWell }) {
   const [query, setQuery] = useState('')
+  const [scope, setScope] = useState('active')
 
   const wells = resource.data?.wells || []
   const tasks = resource.data?.tasks || []
+  const activity = activityResource?.data?.wells || []
 
   const workByWell = useMemo(() => summariseWorkByWell(tasks), [tasks])
+  const tasksByWell = useMemo(() => groupTasksByWell(tasks), [tasks])
 
-  const sorted = useMemo(
-    () => [...wells].sort((a, b) => b.task_count - a.task_count || a.well_id - b.well_id),
-    [wells],
+  /**
+   * One row per well, from the two backend lists that describe it: the day's
+   * per-well rollup (status counts, task count for the date) and the well's
+   * task activity (incomplete/ongoing/last seen). This is a lookup by well id,
+   * not a calculation -- neither list's figures are combined into a new one.
+   */
+  const rows = useMemo(() => merge(wells, activity), [wells, activity])
+
+  const scopes = useMemo(
+    () => ({
+      active: rows.filter((row) => isActive(row)),
+      reported: rows.filter((row) => (row.activity?.today_reported_task_count || row.task_count) > 0),
+      all: rows,
+    }),
+    [rows],
   )
+
+  const sorted = useMemo(() => {
+    const selected = scopes[scope] || rows
+    return [...selected].sort(
+      (a, b) =>
+        Number(hasReported(b)) - Number(hasReported(a)) ||
+        b.task_count - a.task_count ||
+        (b.activity?.open_task_count || 0) - (a.activity?.open_task_count || 0) ||
+        (b.activity?.ongoing_task_count || 0) - (a.activity?.ongoing_task_count || 0) ||
+        a.well_id - b.well_id,
+    )
+  }, [scopes, scope, rows])
 
   const filtered = useMemo(() => {
     const needle = query.trim()
@@ -45,7 +84,14 @@ export default function WellList({ resource, reportDate, onSelectWell }) {
     return sorted.filter((well) => String(well.well_id).includes(needle))
   }, [sorted, query])
 
-  if (!resource.data?.task_count) {
+  if (!rows.length) {
+    if (activityResource?.loading) {
+      return (
+        <div className="well-list__note">
+          <Spinner /> Loading task activity for each well…
+        </div>
+      )
+    }
     return (
       <EmptyState title="No daily task records for this date">
         No live well has a task dated {reportDate}. Select another date, or check
@@ -65,10 +111,59 @@ export default function WellList({ resource, reportDate, onSelectWell }) {
           onChange={(event) => setQuery(event.target.value)}
           aria-label="Find a well by ID"
         />
+        {/*
+          Which wells the page lists, never what any of them says. Every option
+          shows the same backend figures for whichever wells it includes; none
+          of them recalculates or hides a number on a row it does show.
+        */}
+        <div className="well-scope" role="group" aria-label="Which wells to list">
+          <ScopeButton
+            scope="active"
+            current={scope}
+            onSelect={setScope}
+            count={scopes.active.length}
+            label="Reporting or open work"
+            title="Wells that reported a task on this date, or still have open tasks of any kind."
+          />
+          <ScopeButton
+            scope="reported"
+            current={scope}
+            onSelect={setScope}
+            count={scopes.reported.length}
+            label="Reported on this date"
+            title="Only the wells that reported at least one task on the selected date."
+          />
+          <ScopeButton
+            scope="all"
+            current={scope}
+            onSelect={setScope}
+            count={scopes.all.length}
+            label="All"
+            title="Every live well with any task record on or before the selected date."
+          />
+        </div>
         <span className="well-list__count">
           {filtered.length} of {sorted.length} well{sorted.length === 1 ? '' : 's'}
         </span>
       </div>
+
+      {!tasks.length ? (
+        <div className="well-list__note">
+          No live well reported a daily task on {reportDate}. The wells below are listed
+          for their task activity up to that date.
+        </div>
+      ) : null}
+      {activityResource?.loading ? (
+        <div className="well-list__note">
+          <Spinner /> Loading task activity for each well…
+        </div>
+      ) : null}
+      {activityResource?.error ? (
+        <div className="well-list__note well-list__note--error">
+          Task-activity figures could not be loaded ({activityResource.error.message}). The
+          day's own task counts below are unaffected.
+        </div>
+      ) : null}
 
       {/*
         Keyed by reportDate: each WellRow owns its own "is the AI summary
@@ -78,6 +173,7 @@ export default function WellList({ resource, reportDate, onSelectWell }) {
         on to a different one. Changing this key forces React to unmount
         and recreate every row on a date change, resetting that state the
         same way path-reset already closes the top-level explain panel.
+        The expanded task-activity detail resets with it, for the same reason.
       */}
       <div className="well-list" key={reportDate}>
         {filtered.map((well) => (
@@ -85,13 +181,16 @@ export default function WellList({ resource, reportDate, onSelectWell }) {
             key={well.well_id}
             well={well}
             work={workByWell.get(well.well_id)}
+            todaysTasks={tasksByWell.get(well.well_id)}
             reportDate={reportDate}
             onSelectWell={onSelectWell}
           />
         ))}
         {filtered.length === 0 ? (
           <div className="notice">
-            <div className="notice__body">No well matches “{query}”.</div>
+            <div className="notice__body">
+              {query ? `No well matches “${query}”.` : 'No well matches this filter.'}
+            </div>
           </div>
         ) : null}
       </div>
@@ -99,11 +198,28 @@ export default function WellList({ resource, reportDate, onSelectWell }) {
   )
 }
 
-function WellRow({ well, work, reportDate, onSelectWell }) {
+function ScopeButton({ scope, current, onSelect, count, label, title }) {
+  const active = scope === current
+  return (
+    <button
+      type="button"
+      className={`well-scope__btn${active ? ' well-scope__btn--on' : ''}`}
+      onClick={() => onSelect(scope)}
+      aria-pressed={active}
+      title={title}
+    >
+      {label} <Num>{count}</Num>
+    </button>
+  )
+}
+
+function WellRow({ well, work, todaysTasks, reportDate, onSelectWell }) {
   const [explaining, setExplaining] = useState(false)
+  const [expanded, setExpanded] = useState(null)
   const activeStatuses = orderedStatuses(well.status_counts).filter(
     (status) => well.status_counts[status],
   )
+  const activity = well.activity
 
   const openWell = () => onSelectWell(well.well_id)
   const openWellOnKey = (event) => {
@@ -112,6 +228,17 @@ function WellRow({ well, work, reportDate, onSelectWell }) {
       openWell()
     }
   }
+
+  const toggle = (key) => setExpanded((current) => (current === key ? null : key))
+
+  // The AI request object is memoised on the values that identify it, so the
+  // panel's effect fires once per well/date rather than on every re-render of
+  // the list around it -- a re-rendered object literal would otherwise look
+  // like a new request and ask for the same explanation again.
+  const explainRequest = useMemo(
+    () => ({ report_date: reportDate, scope: 'well', well_id: well.well_id }),
+    [reportDate, well.well_id],
+  )
 
   return (
     <article className="well-row">
@@ -133,15 +260,23 @@ function WellRow({ well, work, reportDate, onSelectWell }) {
           <span className="well-row__id">Well {well.well_id}</span>
 
           <span className="well-row__work">
-            {work?.label || <span className="missing">Activity not mapped</span>}
-            {work && work.distinctCount > 1 ? (
-              <span className="well-row__work-extra"> +{work.distinctCount - 1} more</span>
-            ) : null}
+            {well.task_count ? (
+              <>
+                {work?.label || <span className="missing">Activity not mapped</span>}
+                {work && work.distinctCount > 1 ? (
+                  <span className="well-row__work-extra"> +{work.distinctCount - 1} more</span>
+                ) : null}
+              </>
+            ) : (
+              <span className="missing">No task reported on this date</span>
+            )}
           </span>
 
-          <span className="well-row__figure">
-            <Num>{well.task_count}</Num> task{well.task_count === 1 ? '' : 's'}
-          </span>
+          {well.task_count ? (
+            <span className="well-row__figure">
+              <Num>{well.task_count}</Num> task{well.task_count === 1 ? '' : 's'}
+            </span>
+          ) : null}
 
           <span className="well-row__statuses">
             {activeStatuses.map((status) => (
@@ -165,14 +300,308 @@ function WellRow({ well, work, reportDate, onSelectWell }) {
         </button>
       </div>
 
-      {explaining ? (
-        <ExplainPanel
-          request={{ report_date: reportDate, scope: 'well', well_id: well.well_id }}
-          onClose={() => setExplaining(false)}
+      {activity ? (
+        <TaskActivityStrip
+          activity={activity}
+          expanded={expanded}
+          onToggle={toggle}
+          todaysTaskCount={well.task_count}
         />
+      ) : null}
+
+      {expanded ? (
+        <TaskActivityDetail
+          wellId={well.well_id}
+          reportDate={reportDate}
+          metric={expanded}
+          todaysTasks={todaysTasks}
+          onClose={() => setExpanded(null)}
+        />
+      ) : null}
+
+      {explaining ? (
+        <ExplainPanel request={explainRequest} onClose={() => setExplaining(false)} />
       ) : null}
     </article>
   )
+}
+
+/**
+ * The well's task activity as of the selected date: four backend figures, each
+ * one a control that expands the tasks behind it in place. The strip stays on
+ * the well's own card, so an expanded list can never be read as belonging to
+ * another well.
+ */
+function TaskActivityStrip({ activity, expanded, onToggle, todaysTaskCount }) {
+  const todayCount = activity.today_reported_task_count ?? todaysTaskCount ?? 0
+  return (
+    <div className="task-activity">
+      {/*
+        Open is the total, and the two figures after it are its two halves --
+        they do not overlap, so they add up to it. An earlier version counted
+        every open task as "incomplete" and the ongoing ones again alongside,
+        so a row reading "48 incomplete, 24 ongoing" described 48 open tasks
+        rather than 72, with nothing on the row saying which.
+      */}
+      <ActivityMetric
+        metric="open"
+        label="Open"
+        count={activity.open_task_count}
+        expanded={expanded}
+        onToggle={onToggle}
+        title="Every task not recorded as completed. The incomplete and ongoing figures beside this add up to it."
+        emphasis
+      />
+      <ActivityMetric
+        metric="incomplete"
+        label="Incomplete"
+        count={activity.incomplete_task_count}
+        expanded={expanded}
+        onToggle={onToggle}
+        title="Open tasks that are not ongoing: no recorded actual start, or an actual end recorded without completion."
+      />
+      <ActivityMetric
+        metric="ongoing"
+        label="Ongoing"
+        count={activity.ongoing_task_count}
+        expanded={expanded}
+        onToggle={onToggle}
+        title="Open tasks with a recorded actual start and no recorded actual end."
+      />
+      <ActivityMetric
+        metric="today"
+        label="Reported today"
+        count={todayCount}
+        expanded={expanded}
+        onToggle={onToggle}
+        title="Logical tasks this well reported on the selected report date."
+      />
+      <span className="task-activity__date" title="The latest date this well appears in the task-daily records, on or before the selected date. Not a completion date.">
+        Last task date{' '}
+        {activity.last_task_date ? (
+          <Num>{activity.last_task_date}</Num>
+        ) : (
+          <span className="missing">Not recorded</span>
+        )}
+      </span>
+    </div>
+  )
+}
+
+function ActivityMetric({ metric, label, count, expanded, onToggle, title, emphasis }) {
+  const open = expanded === metric
+  const disabled = !count
+  return (
+    <button
+      type="button"
+      className={[
+        'task-metric',
+        open ? 'task-metric--open' : '',
+        emphasis ? 'task-metric--total' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      onClick={disabled ? undefined : () => onToggle(metric)}
+      disabled={disabled}
+      aria-expanded={open}
+      title={title}
+    >
+      <Num>{count ?? 0}</Num>
+      <span className="task-metric__label">{label}</span>
+    </button>
+  )
+}
+
+/**
+ * The tasks behind one of the row's figures, shown inside that same row.
+ *
+ * The incomplete/ongoing lists come from the backend, which resolves every
+ * well's tasks in one query and serves each well from that same result -- so
+ * expanding a second, third and fourth well costs no extra database work.
+ * "Reported today" lists the day's own tasks the page already holds.
+ */
+function TaskActivityDetail({ wellId, reportDate, metric, todaysTasks, onClose }) {
+  const [state, setState] = useState({ loading: metric !== 'today', tasks: null, error: null })
+
+  useEffect(() => {
+    if (metric === 'today') {
+      setState({ loading: false, tasks: null, error: null })
+      return undefined
+    }
+    const controller = new AbortController()
+    let active = true
+    setState({ loading: true, tasks: null, error: null })
+    api
+      .wellActivity({ date: reportDate, wellId }, controller.signal)
+      .then((result) => active && setState({ loading: false, tasks: result.tasks || [], error: null }))
+      .catch((error) => {
+        if (!active || error.name === 'AbortError') return
+        setState({ loading: false, tasks: null, error })
+      })
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [wellId, reportDate, metric])
+
+  const title =
+    metric === 'ongoing'
+      ? `Ongoing tasks on well ${wellId}`
+      : metric === 'incomplete'
+        ? `Incomplete tasks on well ${wellId} (not ongoing)`
+        : metric === 'open'
+          ? `Open tasks on well ${wellId}`
+          : `Tasks reported by well ${wellId} on ${reportDate}`
+
+  // The backend returns every open task; each figure selects its own share of
+  // them, and "open" is the whole set -- the same split the counts show.
+  const rows =
+    metric === 'today'
+      ? todaysTasks || []
+      : (state.tasks || []).filter((task) => {
+          if (metric === 'ongoing') return task.task_state === 'ONGOING'
+          if (metric === 'incomplete') return task.task_state !== 'ONGOING'
+          return true
+        })
+
+  return (
+    <div className="task-detail">
+      <div className="task-detail__head">
+        <span className="task-detail__title">{title}</span>
+        <button type="button" className="btn btn--ghost task-detail__close" onClick={onClose}>
+          Close
+        </button>
+      </div>
+
+      {state.loading ? (
+        <div className="task-detail__note">
+          <Spinner /> Loading this well's tasks…
+        </div>
+      ) : null}
+
+      {state.error ? (
+        <div className="task-detail__note task-detail__note--error">{state.error.message}</div>
+      ) : null}
+
+      {!state.loading && !state.error ? (
+        <table className="task-detail__table">
+          <thead>
+            <tr>
+              <th scope="col">Task</th>
+              <th scope="col">Activity</th>
+              {metric === 'today' ? (
+                <th scope="col">Quantity status</th>
+              ) : (
+                <>
+                  {/* One task_code can appear under two schedule ids and be
+                      two different tasks -- without this column the pair
+                      reads as a duplicated row. */}
+                  <th scope="col">Schedule</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Actual start</th>
+                  <th scope="col">Actual end</th>
+                  <th scope="col">Last task date</th>
+                </>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((task, index) => (
+              <tr key={`${task.task_code}-${task.schedule_id ?? task.task_daily_id ?? index}`}>
+                <td className="task-detail__code">
+                  {task.task_code || <span className="missing">Not recorded</span>}
+                </td>
+                <td>
+                  {task.activity_description || task.activity_code || (
+                    <span className="missing">Not mapped</span>
+                  )}
+                </td>
+                {metric === 'today' ? (
+                  <td>{task.quantity_status}</td>
+                ) : (
+                  <>
+                    <td>{task.schedule_id ?? <span className="missing">—</span>}</td>
+                    <td>
+                      <span className={`task-state task-state--${task.task_state}`}>
+                        {TASK_STATE_LABELS[task.task_state] || task.task_state}
+                      </span>
+                    </td>
+                    <td>{task.actual_start || <span className="missing">—</span>}</td>
+                    <td>{task.actual_end || <span className="missing">—</span>}</td>
+                    <td>{task.last_task_date || <span className="missing">—</span>}</td>
+                  </>
+                )}
+              </tr>
+            ))}
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={metric === 'today' ? 3 : 7} className="task-detail__empty">
+                  No task to show here.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      ) : null}
+    </div>
+  )
+}
+
+/** Human labels for the backend's task states. The code stays authoritative. */
+const TASK_STATE_LABELS = {
+  COMPLETED: 'Completed',
+  ONGOING: 'Ongoing',
+  NOT_STARTED: 'Not started',
+  ENDED_NOT_COMPLETED: 'Ended, not completed',
+}
+
+/** True when the well reported a task on the selected date. */
+function hasReported(row) {
+  return (row.activity?.today_reported_task_count || row.task_count) > 0
+}
+
+/**
+ * A well belongs on the default list when it is either reporting or still
+ * carrying unfinished work. "Unfinished" here is every open task -- incomplete
+ * and ongoing together -- not just the incomplete half, or a well whose whole
+ * open workload happens to be under way would fall off the list. A well that
+ * did neither is still one click away under "All"; it is never dropped, only
+ * moved off the first screen.
+ */
+function isActive(row) {
+  return hasReported(row) || (row.activity?.open_task_count || 0) > 0
+}
+
+/** Joins the day's per-well rollup and the well's task activity by well id. */
+function merge(dailyWells, activityWells) {
+  const byId = new Map()
+  for (const well of activityWells) {
+    byId.set(well.well_id, {
+      well_id: well.well_id,
+      task_count: 0,
+      status_counts: {},
+      activity: well,
+    })
+  }
+  for (const well of dailyWells) {
+    const existing = byId.get(well.well_id)
+    if (existing) {
+      byId.set(well.well_id, { ...existing, ...well, activity: existing.activity })
+    } else {
+      byId.set(well.well_id, { ...well, activity: null })
+    }
+  }
+  return [...byId.values()]
+}
+
+/** The day's tasks, grouped by well, for the "reported today" expansion. */
+function groupTasksByWell(tasks) {
+  const byWell = new Map()
+  for (const task of tasks) {
+    if (!byWell.has(task.well_id)) byWell.set(task.well_id, [])
+    byWell.get(task.well_id).push(task)
+  }
+  return byWell
 }
 
 /**

@@ -15,6 +15,8 @@ Every test points the module at a throwaway ``.env``/log file under
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import openpyxl
 import pytest
 
@@ -183,3 +185,317 @@ class TestNeverRaises:
         monkeypatch.setattr(tracker, "_LOG_FILE", blocked)  # a directory, not a file
         result = tracker.log_usage(input_tokens=1, output_tokens=1, duration_seconds=0.1)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# The authoritative sync
+#
+# No admin key and no network here: `_get_json` is replaced with recorded
+# response shapes from OpenAI's documented usage/cost endpoints, so what is
+# asserted is how this script reads them and what it writes.
+# ---------------------------------------------------------------------------
+
+
+def _sheet_rows(log_file, title):
+    workbook = openpyxl.load_workbook(log_file)
+    if title not in workbook.sheetnames:
+        return None
+    return [[cell.value for cell in row] for row in workbook[title].iter_rows()]
+
+
+def _usage_page(day_start, results, *, next_page=None):
+    """One page of the completions-usage endpoint, as documented."""
+    return {
+        "object": "page",
+        "data": [
+            {
+                "object": "bucket",
+                "start_time": day_start,
+                "end_time": day_start + 86400,
+                "results": results,
+            }
+        ],
+        "has_more": next_page is not None,
+        "next_page": next_page,
+    }
+
+
+def _usage_result(model, *, requests=1, input_tokens=0, output_tokens=0, cached=0):
+    return {
+        "object": "organization.usage.completions.result",
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "input_cached_tokens": cached,
+        "num_model_requests": requests,
+        "project_id": None,
+        "model": model,
+    }
+
+
+#: Bucket starts, as the API reports them: Unix seconds at UTC midnight.
+#: Derived rather than typed as a magic number, so the dates asserted below
+#: and the timestamps fed in can never drift apart.
+DAY_ONE_DATE = "2026-09-16"
+DAY_TWO_DATE = "2026-09-17"
+DAY_ONE = int(datetime(2026, 9, 16, tzinfo=timezone.utc).timestamp())
+DAY_TWO = DAY_ONE + 86400
+
+
+@pytest.fixture
+def admin_env(_isolated_files, monkeypatch):
+    env_file, log_file = _isolated_files
+    env_file.write_text(
+        "LLM_PROVIDER=openai\nLLM_MODEL=gpt-4o-mini\nOPENAI_ADMIN_KEY=sk-admin-test\n",
+        encoding="utf-8",
+    )
+    return env_file, log_file
+
+
+@pytest.fixture
+def fake_api(monkeypatch):
+    """Serves recorded responses and records the URLs asked for."""
+    calls = {"urls": [], "usage": [], "costs": []}
+
+    def responder(url, admin_key):
+        calls["urls"].append(url)
+        assert admin_key == "sk-admin-test"
+        if "/organization/costs" in url:
+            queue = calls["costs"]
+        else:
+            queue = calls["usage"]
+        if not queue:
+            return {"object": "page", "data": [], "has_more": False, "next_page": None}
+        return queue.pop(0)
+
+    monkeypatch.setattr(tracker, "_get_json", responder)
+    return calls
+
+
+class TestSyncConfiguration:
+    def test_the_admin_key_is_read_from_the_env_file(self, admin_env):
+        settings = tracker._usage_api_settings()
+        assert settings["admin_key"] == "sk-admin-test"
+        assert settings["base_url"] == tracker._DEFAULT_USAGE_BASE_URL
+        assert settings["days"] == tracker._DEFAULT_SYNC_DAYS
+        assert settings["project_ids"] == []
+
+    def test_the_window_project_and_endpoint_are_configurable(self, _isolated_files):
+        env_file, _ = _isolated_files
+        env_file.write_text(
+            "OPENAI_ADMIN_KEY=sk-admin-test\n"
+            "OPENAI_USAGE_DAYS=7\n"
+            "OPENAI_USAGE_PROJECT_IDS=proj_a, proj_b\n"
+            "OPENAI_USAGE_BASE_URL=https://example.invalid/v1\n",
+            encoding="utf-8",
+        )
+        settings = tracker._usage_api_settings()
+        assert settings["days"] == 7
+        assert settings["project_ids"] == ["proj_a", "proj_b"]
+        assert settings["base_url"] == "https://example.invalid/v1"
+
+    def test_a_nonsense_window_falls_back_to_the_default(self, _isolated_files):
+        env_file, _ = _isolated_files
+        env_file.write_text("OPENAI_ADMIN_KEY=k\nOPENAI_USAGE_DAYS=not-a-number\n", encoding="utf-8")
+        assert tracker._usage_api_settings()["days"] == tracker._DEFAULT_SYNC_DAYS
+
+    def test_without_an_admin_key_nothing_is_fetched_or_written(self, _isolated_files, monkeypatch):
+        _, log_file = _isolated_files
+
+        def never_called(*args, **kwargs):  # pragma: no cover - must not run
+            raise AssertionError("the API must not be called without an admin key")
+
+        monkeypatch.setattr(tracker, "_get_json", never_called)
+        with pytest.raises(tracker.UsageSyncError) as exc:
+            tracker.sync_openai_usage()
+        assert "OPENAI_ADMIN_KEY" in str(exc.value)
+        assert not log_file.exists()
+
+    def test_the_admin_key_is_never_echoed_in_an_error(self, admin_env, monkeypatch):
+        def refused(url, admin_key):
+            raise tracker.urllib.error.HTTPError(url, 401, "Unauthorized", {}, None)
+
+        monkeypatch.setattr(tracker, "_get_json", tracker._get_json)
+        monkeypatch.setattr(tracker.urllib.request, "urlopen", lambda *a, **k: refused("u", "k"))
+        with pytest.raises(tracker.UsageSyncError) as exc:
+            tracker.sync_openai_usage()
+        message = str(exc.value)
+        assert "sk-admin-test" not in message
+        assert "ADMIN key" in message
+
+
+class TestReadingWhatOpenAIReports:
+    def test_usage_is_shaped_per_day_and_model(self, admin_env, fake_api):
+        fake_api["usage"].append(
+            _usage_page(
+                DAY_ONE,
+                [
+                    _usage_result("gpt-4o-mini", requests=12, input_tokens=9000, output_tokens=1200, cached=512),
+                    _usage_result("gpt-4o", requests=2, input_tokens=400, output_tokens=90),
+                ],
+            )
+        )
+        rows = tracker.fetch_openai_usage(tracker._usage_api_settings(), days=7)
+        assert [row["model"] for row in rows] == ["gpt-4o", "gpt-4o-mini"]  # sorted
+        mini = [row for row in rows if row["model"] == "gpt-4o-mini"][0]
+        assert (mini["requests"], mini["input_tokens"], mini["output_tokens"]) == (12, 9000, 1200)
+        assert mini["input_cached_tokens"] == 512
+        assert mini["date"] == DAY_ONE_DATE
+
+    def test_a_bucket_with_no_usage_is_not_written_as_a_row_of_zeroes(self, admin_env, fake_api):
+        fake_api["usage"].append(_usage_page(DAY_ONE, [_usage_result("gpt-4o-mini", requests=0)]))
+        assert tracker.fetch_openai_usage(tracker._usage_api_settings(), days=7) == []
+
+    def test_every_page_is_followed_so_a_long_window_is_never_short(self, admin_env, fake_api):
+        fake_api["usage"].append(
+            _usage_page(DAY_ONE, [_usage_result("gpt-4o-mini", requests=1, input_tokens=10)], next_page="page-2")
+        )
+        fake_api["usage"].append(
+            _usage_page(DAY_TWO, [_usage_result("gpt-4o-mini", requests=3, input_tokens=30)])
+        )
+        rows = tracker.fetch_openai_usage(tracker._usage_api_settings(), days=7)
+        assert [row["date"] for row in rows] == [DAY_ONE_DATE, DAY_TWO_DATE]
+        assert "page=page-2" in fake_api["urls"][1]
+
+    def test_the_request_asks_for_daily_buckets_grouped_by_model(self, admin_env, fake_api):
+        tracker.fetch_openai_usage(tracker._usage_api_settings(), days=7)
+        url = fake_api["urls"][0]
+        assert "/organization/usage/completions?" in url
+        assert "bucket_width=1d" in url
+        assert "group_by=model" in url
+        assert "start_time=" in url
+
+    def test_costs_are_summed_per_day(self, admin_env, fake_api):
+        fake_api["costs"].append(
+            {
+                "object": "page",
+                "data": [
+                    {
+                        "object": "bucket",
+                        "start_time": DAY_ONE,
+                        "end_time": DAY_TWO,
+                        "results": [
+                            {"amount": {"value": 0.12, "currency": "usd"}, "line_item": "gpt-4o-mini, input"},
+                            {"amount": {"value": 0.03, "currency": "usd"}, "line_item": "gpt-4o-mini, output"},
+                        ],
+                    }
+                ],
+                "has_more": False,
+                "next_page": None,
+            }
+        )
+        costs = tracker.fetch_openai_costs(tracker._usage_api_settings(), days=7)
+        assert costs == {DAY_ONE_DATE: pytest.approx(0.15)}
+
+
+class TestSyncWritesTheWorkbook:
+    @pytest.fixture
+    def synced(self, admin_env, fake_api):
+        _, log_file = admin_env
+        # Two calls this app logged itself, on the same day OpenAI reports.
+        when = datetime(2026, 9, 16, 9, 0, tzinfo=timezone.utc)
+        tracker.log_usage(input_tokens=1000, output_tokens=100, duration_seconds=1.0, timestamp=when)
+        tracker.log_usage(input_tokens=2000, output_tokens=200, duration_seconds=2.0, timestamp=when)
+        fake_api["usage"].append(
+            _usage_page(
+                DAY_ONE,
+                [_usage_result("gpt-4o-mini", requests=9, input_tokens=9000, output_tokens=900, cached=256)],
+            )
+        )
+        fake_api["costs"].append(
+            {
+                "object": "page",
+                "data": [
+                    {
+                        "object": "bucket",
+                        "start_time": DAY_ONE,
+                        "end_time": DAY_TWO,
+                        "results": [{"amount": {"value": 0.25, "currency": "usd"}}],
+                    }
+                ],
+                "has_more": False,
+                "next_page": None,
+            }
+        )
+        result = tracker.sync_openai_usage(days=7)
+        return log_file, result
+
+    def test_the_provider_sheet_holds_what_openai_reported(self, synced):
+        log_file, _ = synced
+        rows = _sheet_rows(log_file, tracker._SHEET_PROVIDER)
+        assert rows[0] == tracker._PROVIDER_HEADERS
+        assert rows[1][:7] == [DAY_ONE_DATE, "gpt-4o-mini", 9, 9000, 256, 900, 9900]
+        assert rows[2][0] == '="TOTAL rows: "&COUNTA(A2:A2)'
+        assert rows[2][3] == "=SUM(D2:D2)"
+
+    def test_the_reconciliation_shows_what_this_app_never_saw(self, synced):
+        log_file, _ = synced
+        rows = _sheet_rows(log_file, tracker._SHEET_RECONCILIATION)
+        assert rows[0] == tracker._RECONCILIATION_HEADERS
+        day = rows[1]
+        assert day[0] == DAY_ONE_DATE
+        assert day[1] == 9          # OpenAI billed nine requests
+        assert day[2] == 2          # this app logged two calls
+        assert day[3] == 7          # seven it never saw -- the whole point
+        assert (day[4], day[5]) == (9000, 3000)   # input tokens, billed vs logged
+        assert (day[6], day[7]) == (900, 300)     # output tokens, billed vs logged
+        assert day[8] == pytest.approx(0.25)
+
+    def test_the_per_call_sheet_is_left_exactly_as_it_was(self, synced):
+        log_file, _ = synced
+        rows = _sheet_rows(log_file, tracker._SHEET_CALLS)
+        assert rows[0] == tracker._HEADERS
+        assert len(rows) == 4  # header + the two logged calls + their totals row
+        assert rows[-1][0] == '="TOTAL calls: "&COUNTA(A2:A3)'
+
+    def test_the_sync_reports_the_gap_it_found(self, synced):
+        _, result = synced
+        assert result["provider_requests"] == 9
+        assert result["logged_calls"] == 2
+        assert result["cost_usd"] == pytest.approx(0.25)
+        assert result["days"] == 7
+
+    def test_a_day_openai_billed_but_this_app_never_logged_is_still_a_row(self, admin_env, fake_api):
+        _, log_file = admin_env
+        fake_api["usage"].append(
+            _usage_page(DAY_ONE, [_usage_result("gpt-4o-mini", requests=4, input_tokens=400, output_tokens=40)])
+        )
+        tracker.sync_openai_usage(days=7)
+        rows = _sheet_rows(log_file, tracker._SHEET_RECONCILIATION)
+        assert rows[1][0] == DAY_ONE_DATE
+        assert (rows[1][1], rows[1][2], rows[1][3]) == (4, 0, 4)
+
+    def test_a_day_with_no_reported_cost_is_left_blank_not_zero(self, admin_env, fake_api):
+        _, log_file = admin_env
+        fake_api["usage"].append(
+            _usage_page(DAY_ONE, [_usage_result("gpt-4o-mini", requests=1, input_tokens=10, output_tokens=1)])
+        )
+        tracker.sync_openai_usage(days=7)
+        rows = _sheet_rows(log_file, tracker._SHEET_RECONCILIATION)
+        assert rows[1][8] is None
+
+    def test_syncing_the_same_window_again_replaces_rather_than_duplicates(self, admin_env, fake_api):
+        _, log_file = admin_env
+        for _ in range(2):
+            fake_api["usage"].append(
+                _usage_page(DAY_ONE, [_usage_result("gpt-4o-mini", requests=4, input_tokens=400, output_tokens=40)])
+            )
+            tracker.sync_openai_usage(days=7)
+        rows = _sheet_rows(log_file, tracker._SHEET_PROVIDER)
+        assert len([row for row in rows if row[0] == DAY_ONE_DATE]) == 1
+
+    def test_a_call_logged_after_a_sync_still_lands_on_the_per_call_sheet(self, synced):
+        # Regression: with three sheets in the workbook, "the active sheet" is
+        # whichever one Excel last had selected -- a new row must go to the
+        # per-call sheet by name, never to whatever that happens to be.
+        log_file, _ = synced
+        workbook = openpyxl.load_workbook(log_file)
+        workbook.active = workbook.sheetnames.index(tracker._SHEET_RECONCILIATION)
+        workbook.save(log_file)
+
+        tracker.log_usage(input_tokens=7, output_tokens=7, duration_seconds=0.7)
+
+        calls = _sheet_rows(log_file, tracker._SHEET_CALLS)
+        assert calls[-2][4] == 7  # the new row, directly above the totals row
+        assert len(_sheet_rows(log_file, tracker._SHEET_RECONCILIATION)[0]) == len(
+            tracker._RECONCILIATION_HEADERS
+        )

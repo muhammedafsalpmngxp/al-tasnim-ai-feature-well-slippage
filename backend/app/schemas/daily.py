@@ -225,6 +225,80 @@ class WellTaskSummaryOut(BaseModel):
     uom_code: Optional[str] = None
 
 
+class LogicalTaskOut(BaseModel):
+    """One logical task in its latest recorded state as of the report date.
+
+    The rows behind a well's Incomplete / Ongoing figures on the front page.
+    ``task_daily.progress`` is deliberately absent: it takes no part in this
+    classification and must never be read as a degree of completion.
+    """
+
+    well_id: int
+    schedule_id: Optional[int] = None
+    task_code: Optional[str] = None
+    task_state: str = Field(
+        ...,
+        description="COMPLETED | ONGOING | NOT_STARTED | ENDED_NOT_COMPLETED",
+    )
+    #: The last date this task appeared in the daily records on or before the
+    #: report date. An activity date, never a proof of completion.
+    last_task_date: Optional[date] = None
+    actual_start: Optional[date] = None
+    actual_end: Optional[date] = None
+    completed: Optional[bool] = None
+    activity_id: Optional[str] = None
+    activity_code: Optional[str] = None
+    activity_description: Optional[str] = None
+    wbs: Optional[str] = None
+
+
+class WellTaskActivityOut(BaseModel):
+    """One live well's task activity as of the selected report date.
+
+    Every figure is computed by SQL/Python (sql/well_task_activity.sql and
+    app/services/well_activity_service.py) and is shown as returned: the UI
+    sums nothing and reclassifies nothing.
+    """
+
+    well_id: int
+    #: Logical tasks reported on the report date itself, at the same daily
+    #: grain as the rest of the brief -- repeated planning snapshots of one
+    #: task are never counted twice. Zero means the well reported no task on
+    #: that date.
+    today_reported_task_count: int
+    has_task_on_report_date: bool
+    #: Every task whose latest recorded state is not completed. The two fields
+    #: below split it in two without overlapping, so
+    #: ``open_task_count == incomplete_task_count + ongoing_task_count``.
+    open_task_count: int
+    #: Open but NOT ongoing: no recorded actual start, or an actual end
+    #: recorded without completion. An ongoing task is never counted here too.
+    incomplete_task_count: int
+    #: Open tasks with a recorded actual start and no recorded actual end.
+    #: Never derived from progress.
+    ongoing_task_count: int
+    not_started_task_count: int
+    ended_not_completed_task_count: int
+    completed_task_count: int
+    logical_task_count: int
+    task_state_counts: Dict[str, int] = {}
+    #: MAX(ActionOn) on or before the report date: the latest date this well
+    #: appeared in the task-daily data. NOT a completion date -- no column in
+    #: this schema is approved as one.
+    last_task_date: Optional[date] = None
+
+
+class WellActivityResponse(BaseModel):
+    report_date: date
+    well_count: int
+    wells: List[WellTaskActivityOut]
+    #: Populated only when one well was asked for: the incomplete logical
+    #: tasks behind that well's counts, for the front page's expandable
+    #: detail. Left empty for the whole-universe list so the dashboard never
+    #: carries thousands of rows it does not show.
+    tasks: List[LogicalTaskOut] = []
+
+
 class GroupDetailsResponse(BaseModel):
     report_date: date
     filters: Dict[str, Optional[str]]
@@ -271,6 +345,46 @@ class ExplainRequest(BaseModel):
     task_daily_id: Optional[int] = None
 
 
+class SqlSourceOut(BaseModel):
+    """One query a panel's figures came from, exactly as it is executed.
+
+    The text is the shipped ``.sql`` file with its includes expanded -- the
+    same string handed to the driver. Parameters are listed separately
+    because that is how they are sent: bound, never spliced into the text.
+    """
+
+    label: str
+    file: str
+    parameters: List[str] = []
+    sql: str
+
+
+class ProofRowOut(BaseModel):
+    """One task record behind a count, with the reason it is counted.
+
+    ``reason`` restates what the record's own columns say -- never an
+    interpretation of them -- so a count can be checked by hand against the
+    rows that produced it.
+    """
+
+    well_id: int
+    task_code: Optional[str] = None
+    schedule_id: Optional[int] = None
+    activity_code: Optional[str] = None
+    description: Optional[str] = None
+    wbs: Optional[str] = None
+    task_state: str
+    #: Which of the well row's two figures this task counts toward. They are
+    #: disjoint, so exactly one of these is ever true.
+    counts_as_incomplete: bool
+    counts_as_ongoing: bool
+    completed: Optional[bool] = None
+    actual_start: Optional[date] = None
+    actual_end: Optional[date] = None
+    last_task_date: Optional[date] = None
+    reason: str
+
+
 class ExplainResponse(BaseModel):
     report_date: date
     scope: str
@@ -282,7 +396,27 @@ class ExplainResponse(BaseModel):
     #: than generated just now -- the underlying evidence hashed the same, so
     #: no new LLM call was made. See LLMService._ExplainCache.
     cached: bool = False
+    #: Exactly what the model was given: the deterministic evidence payload,
+    #: the same JSON the request sent, so "what is sent to the AI model" can
+    #: be inspected as data rather than as an implementation detail. It never
+    #: carries a credential, a connection string or a query -- the model is
+    #: never shown any of those either.
     evidence: Dict = {}
+    #: Evidence keys returned here for audit but deliberately withheld from
+    #: the model's own input, so the panel showing the payload can say so
+    #: rather than overstating what was sent. See routes_explain.py.
+    evidence_withheld_from_model: List[str] = []
+    #: The queries the figures in this explanation came from. For the
+    #: operator, never for the model -- the LLM is given finished figures, and
+    #: handing it SQL would only invite it to reason about the query instead.
+    sql_sources: List[SqlSourceOut] = []
+    #: The individual task records behind the incomplete/ongoing counts, each
+    #: with the reason it is counted that way. Empty for a scope that has no
+    #: such counts.
+    proof: List[ProofRowOut] = []
+    #: Set when ``proof`` was capped, naming the true total so a sample is
+    #: never mistaken for the whole.
+    proof_note: Optional[str] = None
 
 
 class MilestoneAlertOut(BaseModel):

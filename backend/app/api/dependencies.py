@@ -21,6 +21,7 @@ from app.services.export_service import ExportService
 from app.services.grouping_service import GroupingService
 from app.services.llm_service import LLMService
 from app.services.milestone_service import MilestoneService
+from app.services.well_activity_service import WellActivityService
 
 _daily_service = DailyService()
 _grouping_service = GroupingService()
@@ -29,6 +30,7 @@ _evidence_service = EvidenceService(_grouping_service)
 _llm_service = LLMService()
 _milestone_service = MilestoneService()
 _crew_suggestion_service = CrewSuggestionService()
+_well_activity_service = WellActivityService()
 
 
 def get_daily_service() -> DailyService:
@@ -57,6 +59,10 @@ def get_milestone_service() -> MilestoneService:
 
 def get_crew_suggestion_service() -> CrewSuggestionService:
     return _crew_suggestion_service
+
+
+def get_well_activity_service() -> WellActivityService:
+    return _well_activity_service
 
 
 def parse_report_date(
